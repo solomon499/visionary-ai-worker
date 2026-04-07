@@ -560,15 +560,28 @@ async function executeTask(task_id, user_id) {
 
   } catch (error) {
     console.error(`[executor] ❌ Task ${task_id} failed:`, error.message);
+    // Translate cryptic API errors into human-readable messages
+    let humanError = error.message;
+    if (/authentication|invalid.*key|api.?key|unauthorized/i.test(error.message)) {
+      humanError = '🔑 Invalid or expired API key. Go to Settings → Connections and re-enter your Anthropic key.';
+    } else if (/rate.?limit|too many requests|429/i.test(error.message)) {
+      humanError = '⏱️ AI rate limit hit. Wait a minute and try again, or upgrade your Anthropic plan.';
+    } else if (/quota|insufficient.?credits|billing|out.?of.?tokens/i.test(error.message)) {
+      humanError = '💳 Your AI account is out of credits. Add credits at console.anthropic.com, then retry.';
+    } else if (/timeout|timed out|ECONNRESET|ETIMEDOUT/i.test(error.message)) {
+      humanError = '⌛ The AI took too long to respond. The task will be retried automatically.';
+    } else if (/network|ENOTFOUND|fetch/i.test(error.message)) {
+      humanError = '🌐 Network error reaching the AI. Check your connection and retry.';
+    }
     await supabase.from('tasks')
       .update({
         status: 'failed',
-        last_error: error.message,
+        last_error: humanError,
         attempts: ((await supabase.from('tasks').select('attempts').eq('id', task_id).single()).data?.attempts || 0) + 1,
         updated_at: new Date().toISOString(),
       })
       .eq('id', task_id);
-    await supabase.from('task_notes').insert({ task_id, user_id, content: `❌ Task failed: ${error.message}`, author_type: 'ai', author_name: 'OpenClaw AI' });
+    await supabase.from('task_notes').insert({ task_id, user_id, content: `❌ ${humanError}`, author_type: 'ai', author_name: 'OpenClaw AI' });
   }
 }
 
