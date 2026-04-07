@@ -341,11 +341,16 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
   const agentType = task.agent_type || task.type || 'copy';
   const baseSystemPrompt = AGENT_PROMPTS[agentType] || AGENT_PROMPTS.copy;
 
+  // Always append user notes so AI sees them regardless of task type
+  const notesAddendum = (task.prompt && task.prompt !== taskInstruction)
+    ? `\n\nADDITIONAL NOTES FROM USER:\n${task.prompt}`
+    : '';
+
   return {
     system: `${baseSystemPrompt}
 
 ${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}`,
-    userMessage: taskInstruction
+    userMessage: taskInstruction + notesAddendum
   };
 }
 
