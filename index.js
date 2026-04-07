@@ -56,11 +56,12 @@ async function uploadImageToStorage(imageData, userId, taskId, index) {
 }
 
 // ─── fal.ai image generation ──────────────────────────────────────────────────
-async function generateImages(prompt, count = 3, aspectRatio = '1:1') {
+async function generateImages(prompt, count = 3, aspectRatio = '1:1', userFalKey = null) {
+  const apiKey = userFalKey || FAL_API_KEY; // User's key takes priority; platform key is fallback
   const response = await fetch(`https://fal.run/${FAL_MODEL}`, {
     method: 'POST',
     headers: {
-      'Authorization': `Key ${FAL_API_KEY}`,
+      'Authorization': `Key ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -344,9 +345,9 @@ async function executeTask(task_id, user_id) {
       .update({ status: 'working', started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq('id', task_id);
 
-    // 3. Get user's API key
+    // 3. Get user's API keys (Anthropic + fal.ai)
     const { data: conn } = await supabase.from('openclaw_connections')
-      .select('anthropic_api_key, ai_model')
+      .select('anthropic_api_key, ai_model, fal_api_key')
       .eq('user_id', user_id)
       .single();
 
@@ -433,12 +434,17 @@ async function executeTask(task_id, user_id) {
           console.log(`[executor] Phase 2 — generating ${items.length} image(s) via fal.ai (Nano Banana 2)`);
 
           const aspectRatio = taskCtx.answers?.platforms?.includes('instagram') ? '4:5' : '1:1';
+          const userFalKey = conn?.fal_api_key || null;
+
+          if (!userFalKey && !FAL_API_KEY) {
+            console.warn('[executor] No fal.ai key available — skipping image generation. User should connect fal.ai in Settings.');
+          }
 
           // Generate + upload sequentially to avoid hammering fal.ai
           for (let i = 0; i < items.length; i++) {
             const item = items[i];
             try {
-              const rawUrls = await generateImages(item.image_prompt, 1, aspectRatio);
+              const rawUrls = await generateImages(item.image_prompt, 1, aspectRatio, userFalKey);
               if (rawUrls.length > 0) {
                 // Upload to Supabase Storage (account-scoped) and swap base64/raw URL → CDN URL
                 const cdnUrl = await uploadImageToStorage(rawUrls[0], user_id, task_id, i);
