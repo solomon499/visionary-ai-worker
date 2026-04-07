@@ -620,5 +620,40 @@ async function pollAndExecute() {
 setInterval(pollAndExecute, 20000); // every 20 seconds
 console.log('[poller] Auto-poller started — checking for queued tasks every 20s');
 
+// ─── Schedule poller: promote scheduled tasks to queued when due ──────────────
+async function promoteScheduledTasks() {
+  try {
+    const now = new Date().toISOString();
+    const { data: dueTasks, error } = await supabase
+      .from('tasks')
+      .select('id, title, team_member_id')
+      .eq('status', 'scheduled')
+      .lte('scheduled_for', now)
+      .limit(20);
+
+    if (error) {
+      console.error('[scheduler] Supabase error:', error.message);
+      return;
+    }
+
+    if (!dueTasks || dueTasks.length === 0) return;
+
+    console.log(`[scheduler] Promoting ${dueTasks.length} scheduled task(s) to queued`);
+
+    for (const task of dueTasks) {
+      await supabase.from('tasks')
+        .update({ status: 'queued', updated_at: new Date().toISOString() })
+        .eq('id', task.id)
+        .eq('status', 'scheduled'); // guard against race
+      console.log(`[scheduler] Task ${task.id} (${task.title}) → queued`);
+    }
+  } catch (err) {
+    console.error('[scheduler] Error:', err.message);
+  }
+}
+
+setInterval(promoteScheduledTasks, 60000); // every 60 seconds
+console.log('[scheduler] Schedule poller started — promoting due tasks every 60s');
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`[visionary-ai-worker] Running on port ${PORT}`));
