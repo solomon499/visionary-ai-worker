@@ -153,7 +153,7 @@ app.post('/execute', requireSecret, async (req, res) => {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 4096,
+        max_tokens: task.type === 'page' ? 16000 : 4096,
         system,
         messages: [{ role: 'user', content: userMessage }],
       }),
@@ -165,7 +165,10 @@ app.post('/execute', requireSecret, async (req, res) => {
     }
 
     const data = await response.json();
-    const result = data.content?.[0]?.text || '';
+    let result = data.content?.[0]?.text || '';
+
+    // Strip markdown code fences (```html ... ``` or ``` ... ```)
+    result = result.replace(/^```[a-z]*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
 
     // 6. For page tasks — auto-deploy preview to Vercel before review
     let previewUrl = null;
