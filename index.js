@@ -4,6 +4,39 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json());
 
+const FAL_API_KEY = process.env.FAL_API_KEY || '5f22c618-1874-4e21-8f05-76e58c875449:c72f49474597d9f3f5129587f38930ef';
+const FAL_MODEL = 'fal-ai/nano-banana-2'; // Gemini 3.1 Flash Image
+
+// ─── fal.ai image generation ──────────────────────────────────────────────────
+async function generateImages(prompt, count = 3, aspectRatio = '1:1') {
+  const response = await fetch(`https://fal.run/${FAL_MODEL}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Key ${FAL_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      prompt,
+      num_images: Math.min(count, 4), // fal.ai max batch is 4
+      image_size: aspectRatio === '9:16' ? 'portrait_4_3'
+        : aspectRatio === '16:9' ? 'landscape_16_9'
+        : aspectRatio === '4:5' ? 'portrait_4_3'
+        : 'square_hd',
+      sync_mode: true,
+      enable_safety_checker: true,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`fal.ai error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  // fal.ai returns { images: [{ url, width, height, content_type }] }
+  return (data.images || []).map(img => img.url).filter(Boolean);
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
@@ -142,20 +175,75 @@ Preview: [1 sentence preview text]
 
 [signature]`;
   } else if (task.type === 'ad') {
-    const adTypes = ctx.ad_types || ['direct-offer'];
-    taskInstruction = `Create retarget ad variations.\nAd types: ${adTypes.join(', ')}\nManyChat keyword: ${ctx.manychat_keyword || 'DM me'}\nFor each: Setting description, word-for-word script (30-60s), Copy (headline + primary text + CTA).`;
+    const needsMedia = ctx.answers?.media === 'ai' || ctx.media === 'ai';
+    const creativeCount = parseInt(ctx.answers?.creative_count || ctx.creative_count || '3', 10);
+    const manychatKeyword = ctx.answers?.manychat_keyword || ctx.manychat_keyword || 'DM me';
+
+    if (needsMedia) {
+      // Two-phase: output structured JSON so Phase 2 can generate images
+      taskInstruction = `You are building ${creativeCount} ad creative(s) for this campaign.
+
+Output a single valid JSON object. No markdown. No code fences. No preamble.
+
+{
+  "creatives": [
+    {
+      "headline": "Short punchy headline (max 8 words)",
+      "primary_text": "Ad body copy — 2-3 sentences, benefit-led, conversational",
+      "cta": "Call to action text (e.g. 'Comment ${manychatKeyword} below')",
+      "image_prompt": "Detailed visual prompt for this ad image. Must describe: subject (use character/brand details from CHARACTER VOICE), composition, lighting, mood, color palette, style. Be specific and cinematic. Do NOT mention brand name or text overlays — describe the visual only."
+    }
+  ]
+}
+
+Rules:
+- Each creative must have a distinct angle (e.g. pain point, result, curiosity, social proof)
+- image_prompt must follow the character's visual identity from the CHARACTER VOICE section
+- Do not include any text/logos in the image_prompt — those get added as overlays
+- ManyChat keyword for CTAs: ${manychatKeyword}`;
+    } else {
+      const adTypes = ctx.ad_types || ['direct-offer'];
+      taskInstruction = `Create retarget ad variations.\nAd types: ${adTypes.join(', ')}\nManyChat keyword: ${manychatKeyword}\nFor each: Setting description, word-for-word script (30-60s), Copy (headline + primary text + CTA).`;
+    }
   } else {
     // Standard playbook task — build rich instruction from answers + context
     const answers = ctx.answers || {};
     const playbookId = ctx.playbook_id || '';
+    const needsMedia = answers.media === 'ai';
 
     if (Object.keys(answers).length > 0) {
       const answerLines = Object.entries(answers)
-        .filter(([, v]) => v && v !== '__add_offer')
+        .filter(([k, v]) => v && v !== '__add_offer' && k !== 'media')
         .map(([k, v]) => `- ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
         .join('\n');
 
-      taskInstruction = `Execute this playbook task: ${task.title}
+      if (needsMedia) {
+        // Two-phase: structured JSON output so Phase 2 can generate images
+        taskInstruction = `Execute this content playbook: ${task.title}
+
+PLAYBOOK: ${playbookId || playbookSlug || 'standard'}
+
+USER INPUTS:
+${answerLines}
+
+${offer ? `OFFER: ${offer.name} — $${offer.price || 'free'}` : ''}
+
+Output a single valid JSON object. No markdown. No code fences.
+
+{
+  "posts": [
+    {
+      "platform": "platform name",
+      "caption": "Full post caption with hooks, body, and CTA",
+      "hashtags": ["tag1", "tag2"],
+      "image_prompt": "Detailed visual prompt for this post image. Describe: subject (use character/brand details from CHARACTER VOICE), composition, lighting, mood, color palette, style. Be specific. No text overlays — visuals only."
+    }
+  ]
+}
+
+Create one post per platform selected. Each image_prompt must follow the character's visual identity.`;
+      } else {
+        taskInstruction = `Execute this playbook task: ${task.title}
 
 PLAYBOOK: ${playbookId || playbookSlug || 'standard'}
 
@@ -164,7 +252,8 @@ ${answerLines}
 
 ${offer ? `OFFER BEING PROMOTED:\n- Name: ${offer.name}\n- Price: $${offer.price || 'free'}\n- Description: ${offer.description || ''}\n- Tagline: ${offer.tagline || ''}` : ''}
 
-Follow the playbook methodology exactly. Use the user's specific answers to customize every deliverable. Do not produce generic output — make everything specific to this offer, this audience, and these parameters.`;
+Follow the playbook methodology exactly. Use the user's specific answers to customize every deliverable. Do not produce generic output.`;
+      }
     } else {
       taskInstruction = task.prompt || `Complete this task: ${task.title}`;
     }
@@ -285,7 +374,46 @@ async function executeTask(task_id, user_id) {
       }
     }
 
-    // 6. For page tasks — auto-deploy preview to Vercel before review
+    // 6. Phase 2 — fal.ai image generation (if task has image prompts from Claude)
+    const needsMedia = taskCtx.answers?.media === 'ai' || taskCtx.media === 'ai';
+    if (needsMedia && result.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(result);
+        const items = parsed.creatives || parsed.posts || [];
+
+        if (items.length > 0 && items[0]?.image_prompt) {
+          console.log(`[executor] Phase 2 — generating ${items.length} image(s) via fal.ai (Nano Banana 2)`);
+
+          const imageResults = await Promise.allSettled(
+            items.map(item =>
+              generateImages(
+                item.image_prompt,
+                1, // 1 image per creative/post
+                taskCtx.answers?.platforms?.includes('instagram') ? '4:5' : '1:1'
+              )
+            )
+          );
+
+          // Attach image URLs back to each item
+          items.forEach((item, i) => {
+            const outcome = imageResults[i];
+            item.image_urls = outcome.status === 'fulfilled' ? outcome.value : [];
+            if (outcome.status === 'rejected') {
+              console.error(`[executor] fal.ai error for item ${i}:`, outcome.reason?.message);
+            }
+          });
+
+          // Rebuild result with image URLs attached
+          result = JSON.stringify(parsed, null, 2);
+          console.log(`[executor] Phase 2 complete — images attached to ${items.filter(i => i.image_urls?.length).length}/${items.length} items`);
+        }
+      } catch (parseErr) {
+        console.error('[executor] Phase 2 parse error (non-fatal):', parseErr.message);
+        // Fallback: keep text result as-is
+      }
+    }
+
+    // 7. For page tasks — auto-deploy preview to Vercel before review
     let previewUrl = null;
     if (task.type === 'page' && result.trim().startsWith('<')) {
       try {
