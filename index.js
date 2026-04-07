@@ -6,6 +6,54 @@ app.use(express.json());
 
 const FAL_API_KEY = process.env.FAL_API_KEY || '5f22c618-1874-4e21-8f05-76e58c875449:c72f49474597d9f3f5129587f38930ef';
 const FAL_MODEL = 'fal-ai/nano-banana-2'; // Gemini 3.1 Flash Image
+const STORAGE_BUCKET = 'task-media';
+
+// ─── Upload base64 or URL image to Supabase Storage (account-scoped) ─────────
+async function uploadImageToStorage(imageData, userId, taskId, index) {
+  try {
+    let buffer;
+    let ext = 'png';
+
+    if (imageData.startsWith('data:')) {
+      // Base64 data URL → Buffer
+      const match = imageData.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (!match) throw new Error('Invalid base64 data URL');
+      ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+      buffer = Buffer.from(match[2], 'base64');
+    } else if (imageData.startsWith('http')) {
+      // Remote URL → fetch → Buffer
+      const res = await fetch(imageData);
+      if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
+      const arrayBuf = await res.arrayBuffer();
+      buffer = Buffer.from(arrayBuf);
+      const ct = res.headers.get('content-type') || '';
+      ext = ct.includes('jpeg') ? 'jpg' : 'png';
+    } else {
+      throw new Error('Unknown image format');
+    }
+
+    // Account-scoped path: users/{user_id}/tasks/{task_id}/{index}.{ext}
+    const storagePath = `users/${userId}/tasks/${taskId}/creative-${index}.${ext}`;
+
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(storagePath, buffer, {
+        contentType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+        upsert: true,
+      });
+
+    if (error) throw new Error(`Storage upload error: ${error.message}`);
+
+    const { data: urlData } = supabase.storage
+      .from(STORAGE_BUCKET)
+      .getPublicUrl(storagePath);
+
+    return urlData.publicUrl;
+  } catch (err) {
+    console.error(`[storage] Upload failed for creative ${index}:`, err.message);
+    return null; // Non-fatal: return null, keep image_urls empty
+  }
+}
 
 // ─── fal.ai image generation ──────────────────────────────────────────────────
 async function generateImages(prompt, count = 3, aspectRatio = '1:1') {
@@ -17,7 +65,7 @@ async function generateImages(prompt, count = 3, aspectRatio = '1:1') {
     },
     body: JSON.stringify({
       prompt,
-      num_images: Math.min(count, 4), // fal.ai max batch is 4
+      num_images: Math.min(count, 4),
       image_size: aspectRatio === '9:16' ? 'portrait_4_3'
         : aspectRatio === '16:9' ? 'landscape_16_9'
         : aspectRatio === '4:5' ? 'portrait_4_3'
@@ -384,24 +432,26 @@ async function executeTask(task_id, user_id) {
         if (items.length > 0 && items[0]?.image_prompt) {
           console.log(`[executor] Phase 2 — generating ${items.length} image(s) via fal.ai (Nano Banana 2)`);
 
-          const imageResults = await Promise.allSettled(
-            items.map(item =>
-              generateImages(
-                item.image_prompt,
-                1, // 1 image per creative/post
-                taskCtx.answers?.platforms?.includes('instagram') ? '4:5' : '1:1'
-              )
-            )
-          );
+          const aspectRatio = taskCtx.answers?.platforms?.includes('instagram') ? '4:5' : '1:1';
 
-          // Attach image URLs back to each item
-          items.forEach((item, i) => {
-            const outcome = imageResults[i];
-            item.image_urls = outcome.status === 'fulfilled' ? outcome.value : [];
-            if (outcome.status === 'rejected') {
-              console.error(`[executor] fal.ai error for item ${i}:`, outcome.reason?.message);
+          // Generate + upload sequentially to avoid hammering fal.ai
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            try {
+              const rawUrls = await generateImages(item.image_prompt, 1, aspectRatio);
+              if (rawUrls.length > 0) {
+                // Upload to Supabase Storage (account-scoped) and swap base64/raw URL → CDN URL
+                const cdnUrl = await uploadImageToStorage(rawUrls[0], user_id, task_id, i);
+                item.image_urls = cdnUrl ? [cdnUrl] : [];
+                console.log(`[executor] Creative ${i + 1} uploaded → ${cdnUrl || 'FAILED'}`);
+              } else {
+                item.image_urls = [];
+              }
+            } catch (err) {
+              console.error(`[executor] fal.ai error for item ${i}:`, err.message);
+              item.image_urls = [];
             }
-          });
+          }
 
           // Rebuild result with image URLs attached
           result = JSON.stringify(parsed, null, 2);
