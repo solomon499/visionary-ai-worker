@@ -368,10 +368,11 @@ async function executeTask(task_id, user_id) {
       return;
     }
 
-    // 2. Mark as working
+    // 2. Mark as working + log activity
     await supabase.from('tasks')
       .update({ status: 'working', started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq('id', task_id);
+    await supabase.from('task_notes').insert({ task_id, user_id, content: `⚡ AI picked up this task and started working.`, author_type: 'ai', author_name: 'OpenClaw AI' });
 
     // 3. Get user's API keys (Anthropic + fal.ai)
     const { data: conn } = await supabase.from('openclaw_connections')
@@ -555,6 +556,7 @@ async function executeTask(task_id, user_id) {
       .eq('id', task_id);
 
     console.log(`[executor] ✅ Task ${task_id} complete — moved to review`);
+    await supabase.from('task_notes').insert({ task_id, user_id, content: `✅ AI finished. Output is ready for your review.`, author_type: 'ai', author_name: 'OpenClaw AI' });
 
   } catch (error) {
     console.error(`[executor] ❌ Task ${task_id} failed:`, error.message);
@@ -566,6 +568,7 @@ async function executeTask(task_id, user_id) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', task_id);
+    await supabase.from('task_notes').insert({ task_id, user_id, content: `❌ Task failed: ${error.message}`, author_type: 'ai', author_name: 'OpenClaw AI' });
   }
 }
 
