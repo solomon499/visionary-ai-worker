@@ -145,7 +145,29 @@ Preview: [1 sentence preview text]
     const adTypes = ctx.ad_types || ['direct-offer'];
     taskInstruction = `Create retarget ad variations.\nAd types: ${adTypes.join(', ')}\nManyChat keyword: ${ctx.manychat_keyword || 'DM me'}\nFor each: Setting description, word-for-word script (30-60s), Copy (headline + primary text + CTA).`;
   } else {
-    taskInstruction = task.prompt || `Complete this task: ${task.title}`;
+    // Standard playbook task — build rich instruction from answers + context
+    const answers = ctx.answers || {};
+    const playbookId = ctx.playbook_id || '';
+
+    if (Object.keys(answers).length > 0) {
+      const answerLines = Object.entries(answers)
+        .filter(([, v]) => v && v !== '__add_offer')
+        .map(([k, v]) => `- ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+        .join('\n');
+
+      taskInstruction = `Execute this playbook task: ${task.title}
+
+PLAYBOOK: ${playbookId || playbookSlug || 'standard'}
+
+USER INPUTS:
+${answerLines}
+
+${offer ? `OFFER BEING PROMOTED:\n- Name: ${offer.name}\n- Price: $${offer.price || 'free'}\n- Description: ${offer.description || ''}\n- Tagline: ${offer.tagline || ''}` : ''}
+
+Follow the playbook methodology exactly. Use the user's specific answers to customize every deliverable. Do not produce generic output — make everything specific to this offer, this audience, and these parameters.`;
+    } else {
+      taskInstruction = task.prompt || `Complete this task: ${task.title}`;
+    }
   }
 
   const isWorkflowTask = flow === 'email-sequence' || flow === 'sms-sequence' || task.type === 'workflow';
