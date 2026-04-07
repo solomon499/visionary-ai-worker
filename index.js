@@ -139,13 +139,15 @@ async function buildPrompt(task, userId) {
   if (brand) brandContext = JSON.stringify(brand);
 
   // Load business brain sections
-  let character = '', ica = '', vision = '';
+  let character = '', ica = '', vision = '', leadMagnets = '', paidOffers = '';
   const { data: brainRows } = await supabase.from('business_brain').select('section, content').eq('user_id', userId);
   if (brainRows) {
     for (const row of brainRows) {
       if (row.section === 'character') character = row.content || '';
       if (row.section === 'ica') ica = row.content || '';
       if (row.section === 'vision') vision = row.content || '';
+      if (row.section === 'lead_magnets') leadMagnets = row.content || '';
+      if (row.section === 'paid_offers') paidOffers = row.content || '';
     }
   }
 
@@ -349,7 +351,7 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
   return {
     system: `${baseSystemPrompt}
 
-${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}`,
+${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}${leadMagnets ? `LEAD MAGNETS:\n${leadMagnets}\n\n` : ''}${paidOffers ? `PAID OFFERS:\n${paidOffers}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}`,
     userMessage: taskInstruction + notesAddendum
   };
 }
