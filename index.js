@@ -655,5 +655,80 @@ async function promoteScheduledTasks() {
 setInterval(promoteScheduledTasks, 60000); // every 60 seconds
 console.log('[scheduler] Schedule poller started — promoting due tasks every 60s');
 
+// ─── Escalation poller: alert on stale tasks (48h+ without progress) ─────────
+let lastEscalationCheck = 0;
+async function checkStaleTasksAndEscalate() {
+  // Run every 6 hours (21600000 ms)
+  if (Date.now() - lastEscalationCheck < 21600000) return;
+  lastEscalationCheck = Date.now();
+
+  try {
+    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const { data: staleTasks, error } = await supabase
+      .from('tasks')
+      .select('id, title, status, user_id, updated_at')
+      .in('status', ['blocked', 'queued', 'review'])
+      .lt('updated_at', cutoff)
+      .limit(50);
+
+    if (error) {
+      console.error('[escalation] Supabase error:', error.message);
+      return;
+    }
+
+    if (!staleTasks || staleTasks.length === 0) {
+      console.log('[escalation] No stale tasks found');
+      return;
+    }
+
+    // Group by user
+    const byUser = {};
+    for (const task of staleTasks) {
+      if (!byUser[task.user_id]) byUser[task.user_id] = [];
+      byUser[task.user_id].push(task);
+    }
+
+    // Get user profiles with Telegram IDs
+    const userIds = Object.keys(byUser);
+    const { data: profiles } = await supabase
+      .from('user_profiles')
+      .select('id, telegram_chat_id, email, first_name')
+      .in('id', userIds);
+
+    const profileMap = {};
+    (profiles || []).forEach(p => profileMap[p.id] = p);
+
+    const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+    for (const userId of userIds) {
+      const profile = profileMap[userId];
+      const tasks = byUser[userId];
+      if (!profile?.telegram_chat_id || !TELEGRAM_BOT_TOKEN) continue;
+
+      const msg = `⚠️ *Stale Tasks Alert*\n\n${tasks.length} task(s) need attention (48h+ no progress):\n\n` +
+        tasks.slice(0, 5).map(t => `• ${t.title} (${t.status})`).join('\n') +
+        (tasks.length > 5 ? `\n... and ${tasks.length - 5} more` : '') +
+        `\n\n[View Dashboard](https://visionary-ai-blue.vercel.app/projects)`;
+
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: profile.telegram_chat_id,
+          text: msg,
+          parse_mode: 'Markdown',
+        }),
+      }).catch(err => console.error('[escalation] Telegram failed:', err.message));
+    }
+
+    console.log(`[escalation] Checked ${staleTasks.length} stale tasks for ${userIds.length} users`);
+  } catch (err) {
+    console.error('[escalation] Error:', err.message);
+  }
+}
+
+setInterval(checkStaleTasksAndEscalate, 3600000); // check every hour, but only escalate every 6h
+console.log('[escalation] Stale task escalation started — checking every hour');
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`[visionary-ai-worker] Running on port ${PORT}`));
