@@ -168,14 +168,8 @@ ${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n
   };
 }
 
-// Main execution endpoint
-app.post('/execute', requireSecret, async (req, res) => {
-  // Acknowledge immediately — don't block
-  res.json({ received: true });
-
-  const { task_id, user_id } = req.body;
-  if (!task_id || !user_id) return;
-
+// Core execution logic — callable from HTTP route AND the poller
+async function executeTask(task_id, user_id) {
   console.log(`[executor] Starting task ${task_id} for user ${user_id}`);
 
   try {
@@ -339,7 +333,65 @@ app.post('/execute', requireSecret, async (req, res) => {
       })
       .eq('id', task_id);
   }
+}
+
+// Main execution endpoint — wraps executeTask
+app.post('/execute', requireSecret, async (req, res) => {
+  res.json({ received: true });
+  const { task_id, user_id } = req.body;
+  if (!task_id || !user_id) return;
+  executeTask(task_id, user_id).catch(err =>
+    console.error(`[executor] Unhandled error for ${task_id}:`, err.message)
+  );
 });
+
+// ─── Auto-poller: pick up queued tasks without relying on Vercel fire-and-forget ───
+let pollerRunning = false;
+
+async function pollAndExecute() {
+  if (pollerRunning) return; // prevent overlap
+  pollerRunning = true;
+  try {
+    const { data: tasks, error } = await supabase
+      .from('tasks')
+      .select('id, user_id')
+      .eq('status', 'queued')
+      .eq('assigned_to', 'ai')
+      .limit(5);
+
+    if (error) {
+      console.error('[poller] Supabase error:', error.message);
+      return;
+    }
+
+    for (const task of tasks || []) {
+      console.log(`[poller] Picked up queued task ${task.id}`);
+      // Mark working immediately so next poll cycle doesn't double-pick
+      const { error: markErr } = await supabase
+        .from('tasks')
+        .update({ status: 'working', updated_at: new Date().toISOString() })
+        .eq('id', task.id)
+        .eq('status', 'queued'); // only mark if still queued (race-condition guard)
+
+      if (markErr) {
+        console.error(`[poller] Failed to mark ${task.id} working:`, markErr.message);
+        continue;
+      }
+
+      // Execute async — don't await so loop stays fast
+      executeTask(task.id, task.user_id).catch(err =>
+        console.error(`[poller] executeTask error for ${task.id}:`, err.message)
+      );
+    }
+  } catch (err) {
+    console.error('[poller] Unexpected error:', err.message);
+  } finally {
+    pollerRunning = false;
+  }
+}
+
+setInterval(pollAndExecute, 20000); // every 20 seconds
+console.log('[poller] Auto-poller started — checking for queued tasks every 20s');
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`[visionary-ai-worker] Running on port ${PORT}`));
