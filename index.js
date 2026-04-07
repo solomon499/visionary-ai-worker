@@ -136,7 +136,7 @@ app.post('/execute', requireSecret, async (req, res) => {
 
     // 4. Build prompt
     const { system, userMessage } = await buildPrompt(task, user_id);
-    const model = conn.ai_model || 'claude-3-5-sonnet-20241022';
+    const model = conn.ai_model || 'claude-sonnet-4-5-20250929';
 
     console.log(`[executor] Calling Anthropic for task ${task_id} with model ${model}`);
 
