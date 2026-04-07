@@ -167,10 +167,56 @@ app.post('/execute', requireSecret, async (req, res) => {
     const data = await response.json();
     const result = data.content?.[0]?.text || '';
 
-    // 6. Write result
+    // 6. For page tasks — auto-deploy preview to Vercel before review
+    let previewUrl = null;
+    if (task.type === 'page' && result.trim().startsWith('<')) {
+      try {
+        const { data: tokenRow } = await supabase
+          .from('oauth_tokens')
+          .select('access_token, metadata')
+          .eq('user_id', user_id)
+          .eq('service', 'vercel')
+          .single();
+
+        if (tokenRow?.access_token) {
+          const slug = task.title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 35);
+
+          const teamId = tokenRow.metadata?.team_id || null;
+          const deployEndpoint = teamId
+            ? `https://api.vercel.com/v13/deployments?teamId=${teamId}`
+            : 'https://api.vercel.com/v13/deployments';
+
+          const deployRes = await fetch(deployEndpoint, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${tokenRow.access_token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: `visionary-preview-${slug}`,
+              files: [{ file: 'index.html', data: result }],
+              projectSettings: { framework: null },
+              target: 'production',
+            }),
+          });
+
+          const deployData = await deployRes.json();
+          if (deployRes.ok && deployData.url) {
+            previewUrl = `https://${deployData.url}`;
+            console.log(`[executor] Preview deployed: ${previewUrl}`);
+          }
+        }
+      } catch (deployErr) {
+        console.error(`[executor] Preview deploy failed (non-fatal):`, deployErr.message);
+      }
+    }
+
+    // 7. Write result + preview URL
     await supabase.from('tasks')
       .update({
         result,
+        result_url: previewUrl,
         status: 'review',
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
