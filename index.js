@@ -66,7 +66,51 @@ async function buildPrompt(task, userId) {
     : "Write in the character's voice as defined in CHARACTER VOICE below. Sign off as Arty.";
 
   let taskInstruction = '';
-  if (flow === 'email-broadcast') {
+  if (flow === 'email-sequence' || flow === 'sms-sequence' || task.type === 'workflow') {
+    const sequenceType = flow === 'sms-sequence' ? 'SMS' : 'email';
+    taskInstruction = `Create a complete ${sequenceType} sequence/workflow for: "${topic}"
+
+You MUST output a single valid JSON object. No markdown. No code fences. No explanation. Just the raw JSON.
+
+The JSON must follow this exact structure:
+{
+  "content": {
+    "emails": [
+      {
+        "name": "Email name (short, descriptive)",
+        "subject": "Subject line",
+        "preview": "Preview text, 1 sentence",
+        "body": "Full email body with {{first_name}} personalization, 200-400 words, clear CTA"
+      }
+    ],
+    "sms": [
+      {
+        "name": "SMS name",
+        "body": "SMS text under 160 chars with {{first_name}}"
+      }
+    ]
+  },
+  "workflow": {
+    "name": "Workflow Name",
+    "trigger": "Exact trigger description (e.g. 'Contact added to list: Webinar Registrants')",
+    "steps": [
+      { "action": "send_email", "email": "Email name matching content above", "delay": "immediate" },
+      { "action": "wait", "duration": "24 hours" },
+      { "action": "condition", "if": "no calendar booking", "then": "send_email", "email": "Next email name" },
+      { "action": "send_sms", "sms": "SMS name matching content above", "delay": "immediate" }
+    ]
+  },
+  "deploy_prompt": "Full step-by-step instructions for building this workflow in GHL. Start with: Open GHL → Automations → Workflows → + Create Workflow. Include every step: trigger setup, each action in order, wait times, condition branches, and how to attach each email/SMS to the correct workflow step. Write it as if handing off to a non-technical team member who will follow it literally."
+}
+
+Rules:
+- Write COMPLETE email bodies — no placeholders like [insert body here]
+- workflow.steps must reference email/SMS names exactly as they appear in content
+- deploy_prompt must be complete enough to paste into Cowork or GHL AI Builder and get a working workflow built
+- Include all emails AND sms relevant to the sequence type
+- For email-only sequences, sms array can be empty []
+- For sms-only sequences, emails array can be empty []`;
+  } else if (flow === 'email-broadcast') {
     taskInstruction = `Write a broadcast email about: "${topic}"
 
 Format EXACTLY:
@@ -104,10 +148,22 @@ Preview: [1 sentence preview text]
     taskInstruction = task.prompt || `Complete this task: ${task.title}`;
   }
 
+  const isWorkflowTask = flow === 'email-sequence' || flow === 'sms-sequence' || task.type === 'workflow';
+
+  const workflowSystemAddendum = isWorkflowTask
+    ? `\n\nCRITICAL OUTPUT RULES FOR THIS TASK:
+- Output ONLY a valid JSON object. Nothing else.
+- No markdown code fences. No backticks. No "Here is the JSON:" preamble.
+- No trailing text after the closing brace.
+- All email bodies must be complete — no placeholders, no "[body here]".
+- workflow.steps must reference email/SMS names exactly as written in content.
+- deploy_prompt must be a complete, literal step-by-step guide ready for a human to follow in GHL.`
+    : '';
+
   return {
     system: `You build business assets for a digital marketing business. Follow the playbook methodology exactly. Never produce generic content. Use the real business data provided. Write in the specified voice.
 
-${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}`,
+${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}`,
     userMessage: taskInstruction
   };
 }
@@ -182,8 +238,19 @@ app.post('/execute', requireSecret, async (req, res) => {
     const data = await response.json();
     let result = data.content?.[0]?.text || '';
 
-    // Strip markdown code fences (```html ... ``` or ``` ... ```)
+    // Strip markdown code fences (```html ... ``` or ```json ... ``` or ``` ... ```)
     result = result.replace(/^```[a-z]*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+    // For workflow tasks: strip any preamble before the JSON object
+    const taskCtx = task.prompt_context || {};
+    const isWorkflowResult = taskCtx.flow === 'email-sequence' || taskCtx.flow === 'sms-sequence' || task.type === 'workflow';
+    if (isWorkflowResult) {
+      const jsonStart = result.indexOf('{');
+      const jsonEnd = result.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        result = result.slice(jsonStart, jsonEnd + 1).trim();
+      }
+    }
 
     // For email tasks: strip any metadata sections that leak through
     if (task.type === 'email') {
