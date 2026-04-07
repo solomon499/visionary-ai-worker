@@ -105,6 +105,23 @@ function requireSecret(req, res, next) {
   next();
 }
 
+// ─── Agent type system prompts ───────────────────────────────────────────────
+const AGENT_PROMPTS = {
+  page: `You are a conversion-focused web developer. You build complete, self-contained HTML pages using inline CSS and proven funnel page structures. Output ONLY the complete HTML document. No explanations. No markdown. No code fences. Just the full <!DOCTYPE html> page ready to serve. Use high-contrast design, clear headline hierarchy, a dominant CTA button, and trust signals.`,
+
+  copy: `You are a direct response copywriter trained in Hormozi, Brunson, Todd Brown, and Gary Halbert methodology. You write persuasive, specific, benefit-driven copy in the specified character voice. No generic filler. No corporate language. Every word earns its place. CTAs are specific and urgent.`,
+
+  ads: `You are a Facebook Ads strategist. You create complete ad sets with multiple creative variations. Each ad includes: hook script (word-for-word, first 3 seconds scripted), ad copy (headline + primary text + CTA), ManyChat keyword integration, and production brief with setting/format/duration specs. Angles vary: pain point, result, curiosity, social proof.`,
+
+  bot: `You create training documents for AI sales bots. You produce comprehensive offer documents that include: product details, pricing, objection responses with exact rebuttals, qualification questions, conversation flows with branching paths, escalation rules, and closing scripts. The bot should be able to sell and support using only this document.`,
+
+  content: `You are a social content creator following the Daily 5 system. You produce platform-ready content with character voice, ManyChat keyword CTAs, trending format structures (hook-story-CTA), and caption copy with hashtags. Each piece has a specific platform, purpose, and time slot. Content is engaging, authentic, and drives action.`,
+
+  workflow: `You design email and SMS automation workflows. You produce complete workflow blueprints with: trigger definition, step-by-step actions, wait durations, conditions/branches, and the full content for every email and SMS in the sequence. Also produce a deploy prompt ready to paste into Cowork or GHL AI Builder. Output as structured JSON only — no prose, no markdown.`,
+
+  delivery: `You are a customer success specialist. You create clear, actionable delivery task briefs. Include all customer context, what needs to happen, how to do it, what done looks like, and any special instructions. Be thorough — the person receiving this task should be able to complete it without asking any questions.`,
+};
+
 // Build system prompt from task + business brain
 async function buildPrompt(task, userId) {
   const ctx = task.prompt_context || {};
@@ -320,8 +337,12 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
 - deploy_prompt must be a complete, literal step-by-step guide ready for a human to follow in GHL.`
     : '';
 
+  // Select base system prompt: agent_type takes priority, then type, then default
+  const agentType = task.agent_type || task.type || 'copy';
+  const baseSystemPrompt = AGENT_PROMPTS[agentType] || AGENT_PROMPTS.copy;
+
   return {
-    system: `You build business assets for a digital marketing business. Follow the playbook methodology exactly. Never produce generic content. Use the real business data provided. Write in the specified voice.
+    system: `${baseSystemPrompt}
 
 ${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}`,
     userMessage: taskInstruction
