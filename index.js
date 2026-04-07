@@ -82,6 +82,21 @@ Preview: [preview text, 1 sentence]
     taskInstruction = `Write an SMS about: "${topic}"${link}\nUnder 160 chars. Punchy. Clear CTA. Reply with SMS text only.`;
   } else if (task.type === 'page') {
     taskInstruction = `Build a high-converting landing page as complete HTML/CSS.\nPage type: ${ctx.funnel_type || 'landing page'}\nInclude: headline, subheadline, benefits, CTA, offer details.\nReturn ONLY the complete HTML document.`;
+  } else if (task.type === 'email') {
+    // All email tasks: output ONLY the email, nothing else
+    const basePrompt = task.prompt || `Write an email for: ${task.title}`;
+    taskInstruction = `${basePrompt}
+
+CRITICAL OUTPUT RULE: Output ONLY the email itself. No design notes. No color palettes. No "this email is designed to" sections. No hashtags. No purpose explanations. No markdown headers like ### FOOTER. No meta-commentary of any kind.
+
+Format EXACTLY like this and nothing else:
+Subject: [subject line]
+
+Preview: [1 sentence preview text]
+
+[email body]
+
+[signature]`;
   } else if (task.type === 'ad') {
     const adTypes = ctx.ad_types || ['direct-offer'];
     taskInstruction = `Create retarget ad variations.\nAd types: ${adTypes.join(', ')}\nManyChat keyword: ${ctx.manychat_keyword || 'DM me'}\nFor each: Setting description, word-for-word script (30-60s), Copy (headline + primary text + CTA).`;
@@ -169,6 +184,23 @@ app.post('/execute', requireSecret, async (req, res) => {
 
     // Strip markdown code fences (```html ... ``` or ``` ... ```)
     result = result.replace(/^```[a-z]*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+    // For email tasks: strip any metadata sections that leak through
+    if (task.type === 'email') {
+      const stripMarkers = [
+        /\n---\n\*\*DESIGN NOTES/i,
+        /\n---\n\*\*This email is designed/i,
+        /\n#{1,3}\s*\*{0,2}DESIGN NOTES/i,
+        /\n#{1,3}\s*\*{0,2}FOOTER/i,
+        /\n\*\*DESIGN NOTES/i,
+        /\nDESIGN NOTES:/i,
+        /\n---\s*\nDesign Notes/i,
+      ];
+      for (const marker of stripMarkers) {
+        const idx = result.search(marker);
+        if (idx !== -1) result = result.slice(0, idx).trim();
+      }
+    }
 
     // 6. For page tasks — auto-deploy preview to Vercel before review
     let previewUrl = null;
