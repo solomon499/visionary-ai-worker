@@ -392,7 +392,7 @@ async function executeTask(task_id, user_id) {
     const { system, userMessage } = await buildPrompt(task, user_id);
     // Funnel page/bot builds get Opus — highest quality for high-value deliverables
     const isFunnelBuild = task.source === 'get-sales' && ['page', 'bot'].includes(task.type);
-    const model = isFunnelBuild ? 'claude-opus-4-6' : (conn.ai_model || 'claude-sonnet-4-5-20250929');
+    const model = isFunnelBuild ? 'claude-opus-4-6' : (conn.ai_model || 'claude-sonnet-4-6');
     console.log(`[executor] Model: ${model} (funnel build: ${isFunnelBuild})`);
 
     console.log(`[executor] Calling Anthropic for task ${task_id} with model ${model}`);
