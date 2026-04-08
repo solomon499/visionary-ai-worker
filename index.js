@@ -519,25 +519,59 @@ async function executeTask(task_id, user_id) {
       }
     }
 
-    // 7. For page tasks — set preview URL to platform preview route (serves HTML directly from DB)
+    // 7. For page tasks — auto-deploy HTML to Vercel as a standalone static site
     const PLATFORM_URL = 'https://visionary-ai-blue.vercel.app';
-    let previewUrl = null;
+    let deployedViaVercel = false;
+
     if (task.type === 'page' && result.trim().startsWith('<')) {
-      previewUrl = `${PLATFORM_URL}/api/tasks/${task_id}/preview`;
-      console.log(`[executor] Page preview URL: ${previewUrl}`);
+      const pageName = task.title
+        ? task.title.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/, '').slice(0, 50)
+        : `aim-page-${task_id.slice(0, 8)}`;
+
+      console.log(`[executor] Deploying page task ${task_id} to Vercel as "${pageName}"...`);
+
+      try {
+        const deployRes = await fetch(`${PLATFORM_URL}/api/deploy/page`, {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer aim-railway-secret-2026',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ html: result, task_id, page_name: pageName }),
+        });
+
+        if (deployRes.ok) {
+          const deployData = await deployRes.json();
+          console.log(`[executor] ✅ Page deployed to Vercel: ${deployData.url}`);
+          deployedViaVercel = true;
+          // The deploy route already updated Supabase — skip the normal update below
+        } else {
+          const errText = await deployRes.text();
+          console.error(`[executor] Vercel deploy failed (${deployRes.status}): ${errText} — falling back to direct DB store`);
+        }
+      } catch (deployErr) {
+        console.error(`[executor] Vercel deploy error: ${deployErr.message} — falling back to direct DB store`);
+      }
     }
 
-    // 7. Write result + preview URL
-    await supabase.from('tasks')
-      .update({
-        result,
-        result_url: previewUrl,
-        status: 'review',
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        attempts: (task.attempts || 0) + 1,
-      })
-      .eq('id', task_id);
+    // 8. Write result to DB (skip if Vercel deploy already handled it)
+    if (!deployedViaVercel) {
+      await supabase.from('tasks')
+        .update({
+          result,
+          result_url: null,
+          status: 'review',
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          attempts: (task.attempts || 0) + 1,
+        })
+        .eq('id', task_id);
+    } else {
+      // Only bump the attempts counter — result/status/url already set by deploy route
+      await supabase.from('tasks')
+        .update({ attempts: (task.attempts || 0) + 1 })
+        .eq('id', task_id);
+    }
 
     console.log(`[executor] ✅ Task ${task_id} complete — moved to review`);
     await supabase.from('task_notes').insert({ task_id, user_id, content: `✅ AI finished. Output is ready for your review.`, author_type: 'ai', author_name: 'OpenClaw AI' });
