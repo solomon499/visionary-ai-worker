@@ -452,15 +452,15 @@ async function executeTask(task_id, user_id) {
       }
     }
 
-    // 6. Phase 2 — fal.ai image generation (if task has image prompts from Claude)
-    const needsMedia = taskCtx.answers?.media === 'ai' || taskCtx.media === 'ai';
-    if (needsMedia && result.trim().startsWith('{')) {
+    // 6. Phase 2 — fal.ai image generation for social content posts
+    const isContentTask = result.trim().startsWith('{');
+    if (isContentTask) {
       try {
         const parsed = JSON.parse(result);
         const items = parsed.creatives || parsed.posts || [];
 
-        if (items.length > 0 && items[0]?.image_prompt) {
-          console.log(`[executor] Phase 2 — generating ${items.length} image(s) via fal.ai (Nano Banana 2)`);
+        if (items.length > 0) {
+          console.log(`[executor] Phase 2 — generating ${items.length} image(s) via fal.ai`);
 
           const aspectRatio = taskCtx.answers?.platforms?.includes('instagram') ? '4:5' : '1:1';
           const userFalKey = conn?.fal_api_key || null;
@@ -473,7 +473,12 @@ async function executeTask(task_id, user_id) {
           for (let i = 0; i < items.length; i++) {
             const item = items[i];
             try {
-              const rawUrls = await generateImages(item.image_prompt, 1, aspectRatio, userFalKey);
+              // Build image prompt: use Claude's image_prompt if present, otherwise derive from caption
+              const captionSnippet = (item.caption || item.primary_text || item.headline || '').slice(0, 120);
+              const platform = item.platform || 'social media';
+              const derivedPrompt = item.image_prompt ||
+                `Professional ${platform} marketing image. Modern, clean, bold design. Context: ${captionSnippet}. No text overlays. Photorealistic or stylized graphic, high quality.`;
+              const rawUrls = await generateImages(derivedPrompt, 1, aspectRatio, userFalKey);
               if (rawUrls.length > 0) {
                 // Upload to Supabase Storage (account-scoped) and swap base64/raw URL → CDN URL
                 const cdnUrl = await uploadImageToStorage(rawUrls[0], user_id, task_id, i);
@@ -498,49 +503,12 @@ async function executeTask(task_id, user_id) {
       }
     }
 
-    // 7. For page tasks — auto-deploy preview to Vercel before review
+    // 7. For page tasks — set preview URL to platform preview route (serves HTML directly from DB)
+    const PLATFORM_URL = 'https://visionary-ai-blue.vercel.app';
     let previewUrl = null;
     if (task.type === 'page' && result.trim().startsWith('<')) {
-      try {
-        const { data: tokenRow } = await supabase
-          .from('oauth_tokens')
-          .select('access_token, metadata')
-          .eq('user_id', user_id)
-          .eq('service', 'vercel')
-          .single();
-
-        if (tokenRow?.access_token) {
-          const slug = task.title
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '')
-            .slice(0, 35);
-
-          const teamId = tokenRow.metadata?.team_id || null;
-          const deployEndpoint = teamId
-            ? `https://api.vercel.com/v13/deployments?teamId=${teamId}`
-            : 'https://api.vercel.com/v13/deployments';
-
-          const deployRes = await fetch(deployEndpoint, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${tokenRow.access_token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: `visionary-preview-${slug}`,
-              files: [{ file: 'index.html', data: result }],
-              projectSettings: { framework: null },
-              target: 'production',
-            }),
-          });
-
-          const deployData = await deployRes.json();
-          if (deployRes.ok && deployData.url) {
-            previewUrl = `https://${deployData.url}`;
-            console.log(`[executor] Preview deployed: ${previewUrl}`);
-          }
-        }
-      } catch (deployErr) {
-        console.error(`[executor] Preview deploy failed (non-fatal):`, deployErr.message);
-      }
+      previewUrl = `${PLATFORM_URL}/api/tasks/${task_id}/preview`;
+      console.log(`[executor] Page preview URL: ${previewUrl}`);
     }
 
     // 7. Write result + preview URL
