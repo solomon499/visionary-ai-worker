@@ -291,10 +291,10 @@ Rules:
         const platformsArr = Array.isArray(rawPlatforms)
           ? rawPlatforms
           : (rawPlatforms ? String(rawPlatforms).split(',').map(p => p.trim()) : ['social']);
-        // Post count: answers.days (new) > title "Daily N" > platform count
+        // Post count: Daily 5 = 5 posts/day × number of days
         const daysAnswer = answers.days ? parseInt(String(answers.days), 10) : null;
-        const titleCountMatch = task.title.match(/daily\s+(\d+)/i);
-        const postCount = daysAnswer || (titleCountMatch ? parseInt(titleCountMatch[1], 10) : platformsArr.length);
+        const POSTS_PER_DAY = 5;
+        const postCount = daysAnswer ? daysAnswer * POSTS_PER_DAY : POSTS_PER_DAY;
         const platforms = platformsArr;
 
         // Two-phase: structured JSON output so Phase 2 can generate images
@@ -321,9 +321,10 @@ Output a single valid JSON object with EXACTLY ${postCount} posts. No markdown. 
 }
 
 RULES:
-- Generate EXACTLY ${postCount} posts in the posts array.
+- Generate EXACTLY ${postCount} posts in the posts array (${daysAnswer || 1} day${(daysAnswer || 1) > 1 ? 's' : ''} × 5 posts per day).
 - Distribute posts across these platforms: ${platforms.join(', ')}. Cycle through platforms if there are more posts than platforms.
-- Every post must be unique — different hook, angle, format.
+- Every post must be unique — different hook, angle, format, story.
+- Group posts by day — vary the content type (story, tip, proof, hook, CTA) so each day has a full mix.
 - Each image_prompt must follow the character's visual identity.`;
       } else {
         taskInstruction = `Execute this playbook task: ${task.title}
