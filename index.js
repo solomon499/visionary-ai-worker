@@ -288,8 +288,13 @@ Rules:
       if (needsMedia) {
         // Detect post count from task title (e.g. "Daily 5" = 5, "Daily 3" = 3)
         const titleCountMatch = task.title.match(/daily\s+(\d+)/i);
-        const postCount = titleCountMatch ? parseInt(titleCountMatch[1], 10) : (answers.platforms ? answers.platforms.split(',').length : 1);
-        const platforms = answers.platforms ? answers.platforms.split(',').map(p => p.trim()) : ['social'];
+        // platforms may be array or comma-string
+        const rawPlatforms = answers.platforms;
+        const platformsArr = Array.isArray(rawPlatforms)
+          ? rawPlatforms
+          : (rawPlatforms ? String(rawPlatforms).split(',').map(p => p.trim()) : ['social']);
+        const postCount = titleCountMatch ? parseInt(titleCountMatch[1], 10) : platformsArr.length;
+        const platforms = platformsArr;
 
         // Two-phase: structured JSON output so Phase 2 can generate images
         taskInstruction = `Execute this content playbook: ${task.title}
