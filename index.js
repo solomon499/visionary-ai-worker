@@ -286,6 +286,11 @@ Rules:
         .join('\n');
 
       if (needsMedia) {
+        // Detect post count from task title (e.g. "Daily 5" = 5, "Daily 3" = 3)
+        const titleCountMatch = task.title.match(/daily\s+(\d+)/i);
+        const postCount = titleCountMatch ? parseInt(titleCountMatch[1], 10) : (answers.platforms ? answers.platforms.split(',').length : 1);
+        const platforms = answers.platforms ? answers.platforms.split(',').map(p => p.trim()) : ['social'];
+
         // Two-phase: structured JSON output so Phase 2 can generate images
         taskInstruction = `Execute this content playbook: ${task.title}
 
@@ -296,7 +301,7 @@ ${answerLines}
 
 ${offer ? `OFFER: ${offer.name} — $${offer.price || 'free'}` : ''}
 
-Output a single valid JSON object. No markdown. No code fences.
+Output a single valid JSON object with EXACTLY ${postCount} posts. No markdown. No code fences.
 
 {
   "posts": [
@@ -309,7 +314,11 @@ Output a single valid JSON object. No markdown. No code fences.
   ]
 }
 
-Create one post per platform selected. Each image_prompt must follow the character's visual identity.`;
+RULES:
+- Generate EXACTLY ${postCount} posts in the posts array.
+- Distribute posts across these platforms: ${platforms.join(', ')}. Cycle through platforms if there are more posts than platforms.
+- Every post must be unique — different hook, angle, format.
+- Each image_prompt must follow the character's visual identity.`;
       } else {
         taskInstruction = `Execute this playbook task: ${task.title}
 
