@@ -135,8 +135,14 @@ async function buildPrompt(task, userId) {
 
   // Load brand docs
   let brandContext = '';
+  let logoUrl = '';
+  let brandName = '';
   const { data: brand } = await supabase.from('brand_docs').select('*').eq('user_id', userId).limit(1).single();
-  if (brand) brandContext = JSON.stringify(brand);
+  if (brand) {
+    brandContext = JSON.stringify(brand);
+    logoUrl = brand.user_logo_url || '';
+    brandName = brand.user_brand_name || '';
+  }
 
   // Load business brain sections
   let character = '', ica = '', vision = '', leadMagnets = '', paidOffers = '';
@@ -333,15 +339,20 @@ You are a COPY MACHINE for this page's structure and psychology. You are NOT a d
       }
     }
 
+    const logoInstruction = logoUrl
+      ? `LOGO: Use this logo image in the page: ${logoUrl} — place it exactly where the model page has a logo (typically top-left). Use <img src="${logoUrl}" alt="${brandName || 'Logo'}" style="max-height:60px;width:auto;">`
+      : `LOGO: No logo URL provided. If the model page has a logo slot, use a placeholder: <div style="font-weight:700;font-size:18px;letter-spacing:1px;">${brandName || '[BRAND NAME]'}</div>`;
+
     taskInstruction = `Build a complete, fully functional HTML/CSS/JS landing page.
 Page type: ${funnelType}
 ${modelUrl ? `You are modeling this page: ${modelUrl}` : ''}
+${logoInstruction}
 
 OUTPUT RULES (absolute):
 1. Return ONLY the raw HTML document — no explanation, no markdown, no code fences, nothing before <!DOCTYPE
 2. Inline CSS only (no external stylesheets except Google Fonts via <link>)
 3. All JS inline in <script> tags
-4. Missing media = placeholder box with dashed border and clear label
+4. Missing media = placeholder box with dashed border and label formatted EXACTLY as: [ VIDEO: description ] or [ IMAGE: description ] or [ HEADSHOT: description ] — these will be replaced by the user later
 5. Working JS for any interactive elements (pop-ups, timers, smooth scroll)${modelPageAnalysis}`;
   } else if (task.type === 'email') {
     // All email tasks: output ONLY the email, nothing else
