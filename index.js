@@ -1,8 +1,16 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const { jsonrepair } = require('jsonrepair');
 
 const app = express();
 app.use(express.json());
+
+// Safe JSON parse with auto-repair (handles unescaped quotes, trailing commas, etc.)
+function safeParseJSON(str) {
+  try { return JSON.parse(str); } catch {}
+  try { return JSON.parse(jsonrepair(str)); } catch {}
+  return null;
+}
 
 const FAL_API_KEY = process.env.FAL_API_KEY || '5f22c618-1874-4e21-8f05-76e58c875449:c72f49474597d9f3f5129587f38930ef';
 const FAL_MODEL = 'fal-ai/nano-banana-2'; // Gemini 3.1 Flash Image
@@ -752,12 +760,21 @@ async function executeTask(task_id, user_id) {
     }
 
     // 6a. Safety net: if AI returned planning text instead of JSON, extract JSON or re-prompt
+    //     Also auto-repair malformed JSON (e.g. unescaped quotes in captions)
     if (task.type === 'content' || task.source === 'playbook') {
+      // First: try to repair existing JSON if it starts with {
+      if (result.trim().startsWith('{')) {
+        const repaired = safeParseJSON(result);
+        if (repaired) {
+          result = JSON.stringify(repaired); // normalize to clean JSON
+          console.log('[executor] JSON repaired and normalized');
+        }
+      }
       const jsonMatch = result.match(/\{[\s\S]*"(?:posts|creatives)"[\s\S]*\}/);
-      if (jsonMatch) {
-        // JSON embedded in text — extract it
-        result = jsonMatch[0].trim();
-        console.log('[executor] Extracted JSON from AI planning text');
+      if (jsonMatch && !result.trim().startsWith('{')) {
+        // JSON embedded in text — extract and repair it
+        const extracted = safeParseJSON(jsonMatch[0]);
+        if (extracted) { result = JSON.stringify(extracted); console.log('[executor] Extracted + repaired JSON from AI planning text'); }
       } else if (!result.trim().startsWith('{')) {
         // No JSON at all — re-ask Claude to output the structured format
         console.log('[executor] AI returned text instead of JSON — requesting structured output');
@@ -782,7 +799,7 @@ async function executeTask(task_id, user_id) {
     const isContentTask = result.trim().startsWith('{');
     if (isContentTask) {
       try {
-        const parsed = JSON.parse(result);
+        const parsed = safeParseJSON(result); if (!parsed) throw new Error("JSON repair failed");
         const items = parsed.creatives || parsed.posts || [];
 
         if (items.length > 0) {
@@ -894,7 +911,7 @@ async function executeTask(task_id, user_id) {
     const isSequence = task.type === 'workflow' || (task.prompt_context?.flow || '').includes('sequence');
     if (!isCarousel && !isSequence && result.trim().startsWith('{')) {
       try {
-        const parsed = JSON.parse(result);
+        const parsed = safeParseJSON(result); if (!parsed) throw new Error("JSON repair failed");
         const items = parsed.posts || parsed.creatives || parsed.emails || parsed.ads || [];
         if (items.length > 1) {
           console.log(`[executor] Splitting ${items.length} items into individual review cards`);
