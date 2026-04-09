@@ -379,11 +379,17 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
     ? `\n\nADDITIONAL NOTES FROM USER:\n${task.prompt}`
     : '';
 
+  // Include revision feedback if this is a redo
+  const revisionFeedback = task.revision_feedback || task.result_metadata?.feedback || null;
+  const revisionAddendum = revisionFeedback
+    ? `\n\n⚠️ REVISION INSTRUCTIONS (this is a revised version — the previous output was rejected):\n${revisionFeedback}\n\nYou MUST address every point above. Do not repeat the previous version. Improve it based on this specific feedback.`
+    : '';
+
   return {
     system: `${baseSystemPrompt}
 
 ${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}${leadMagnets ? `LEAD MAGNETS:\n${leadMagnets}\n\n` : ''}${paidOffers ? `PAID OFFERS:\n${paidOffers}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}${memoryContext}`,
-    userMessage: taskInstruction + notesAddendum
+    userMessage: taskInstruction + notesAddendum + revisionAddendum
   };
 }
 
