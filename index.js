@@ -241,7 +241,49 @@ Preview: [preview text, 1 sentence]
     const link = ctx.include_link && ctx.link_url ? `\nInclude this link: ${ctx.link_url}` : '';
     taskInstruction = `Write an SMS about: "${topic}"${link}\nUnder 160 chars. Punchy. Clear CTA. Reply with SMS text only.`;
   } else if (task.type === 'page') {
-    taskInstruction = `Build a high-converting landing page as complete HTML/CSS.\nPage type: ${ctx.funnel_type || 'landing page'}\nInclude: headline, subheadline, benefits, CTA, offer details.\nReturn ONLY the complete HTML document.`;
+    const pageAnswers = ctx.answers || {};
+    const modelUrl = pageAnswers.model_url || ctx.model_url || null;
+    const funnelType = ctx.funnel_type || pageAnswers.funnel_type || 'landing page';
+
+    // If a model URL was provided, fetch and analyze it
+    let modelPageAnalysis = '';
+    if (modelUrl) {
+      try {
+        console.log(`[executor] Fetching model page: ${modelUrl}`);
+        const pageRes = await fetch(modelUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VisionaryAI/1.0)' },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (pageRes.ok) {
+          const html = await pageRes.text();
+          // Extract meaningful structure — strip scripts/styles, keep layout
+          const stripped = html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<!--[\s\S]*?-->/g, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim()
+            .slice(0, 8000); // cap at 8k chars
+          modelPageAnalysis = `\n\nMODEL PAGE ANALYSIS (URL: ${modelUrl})\nYou fetched this page. Here is its text content — use it to extract the exact section structure, sales psychology flow, CTA placement, and content hierarchy:\n\n${stripped}\n\nREQUIREMENTS FOR MATCHING THE MODEL:\n- Match the EXACT section order and layout pattern of the model page\n- If model has a hero → headline + subheadline + CTA button, reproduce that structure\n- If model has a video section, add a video placeholder (branded box with play button icon + text "[ VIDEO: Owner's name — insert your video here ]")\n- If model has a pop-up (e.g. on CTA click), reproduce the pop-up functionality with JavaScript\n- If model has testimonials, include testimonial slots (use placeholder names/quotes)\n- If model has a guarantee section, include one\n- If model has a countdown timer, include a working JavaScript countdown\n- Every section that needs real media (video, product image, headshot) must show a clearly labeled placeholder box instead of a broken image\n- Apply the user's brand colors, fonts, offer copy, and product details — but follow the MODEL's psychological structure exactly`;
+        }
+      } catch (fetchErr) {
+        console.warn(`[executor] Could not fetch model page: ${fetchErr.message}`);
+        modelPageAnalysis = `\n\nNote: Could not fetch model page at ${modelUrl} — build based on the funnel type instead.`;
+      }
+    }
+
+    taskInstruction = `Build a complete, fully functional HTML/CSS/JS landing page.
+Page type: ${funnelType}
+${modelUrl ? `Model page: ${modelUrl} — your page MUST match its section structure and sales psychology exactly.` : ''}
+
+CRITICAL RULES:
+1. Return ONLY the complete HTML document — no explanation, no markdown, no code fences
+2. Use inline CSS only (no external stylesheets except Google Fonts via <link>)
+3. All JavaScript must be inline in <script> tags
+4. Every section that needs media the user hasn't provided (video, product photo, headshot) must render as a clearly labeled placeholder: a styled box with dashed border and text like "[ VIDEO: Paste your embed code here ]" or "[ IMAGE: Upload your product photo here ]" — this signals what the owner needs to provide
+5. Pop-ups, countdown timers, smooth scroll, and any interactive elements from the model page must be reproduced with working JavaScript
+6. Apply the user's brand and offer details from the BRAND and OFFER sections below${modelPageAnalysis}`;
   } else if (task.type === 'email') {
     // All email tasks: output ONLY the email, nothing else
     const basePrompt = task.prompt || `Write an email for: ${task.title}`;
