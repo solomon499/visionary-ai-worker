@@ -681,7 +681,7 @@ async function executeTask(task_id, user_id) {
         },
         body: JSON.stringify({
           model,
-          max_tokens: task.type === 'page' ? 8000 : 4096,
+          max_tokens: task.type === 'page' ? 16000 : 4096,
           system,
           tools: CLAUDE_TOOLS,
           messages,
