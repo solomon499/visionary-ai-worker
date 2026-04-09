@@ -907,7 +907,7 @@ async function executeTask(task_id, user_id) {
               ? `${task.title} — ${platform} (${i + 1}/${items.length})`
               : `${task.title} — Part ${i + 1}/${items.length}`;
 
-            await supabase.from('tasks').insert({
+            const insertRes = await supabase.from('tasks').insert({
               user_id,
               title: itemTitle,
               type: task.type,
@@ -915,14 +915,14 @@ async function executeTask(task_id, user_id) {
               assigned_to: 'human',
               agent: task.agent,
               source: task.source,
-              source_id: task.source_id,
+              source_id: task_id,   // use source_id to link back to parent
               wave: task.wave,
-              parent_task_id: task_id,
               result: JSON.stringify({ posts: [item] }),
               completed_at: new Date().toISOString(),
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             });
+            if (insertRes.error) console.error(`[executor] Child insert error:`, insertRes.error.message);
           }
 
           // Mark parent task as split (auto-approved container — not shown in inbox)
