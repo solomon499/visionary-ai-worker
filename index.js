@@ -571,10 +571,12 @@ async function executeTask(task_id, user_id) {
 
     // 8. Write result to DB (skip if Vercel deploy already handled it)
     if (!deployedViaVercel) {
+      const PLATFORM_URL = process.env.PLATFORM_URL || 'https://visionary-ai-blue.vercel.app';
+      const previewUrl = `${PLATFORM_URL}/api/tasks/${task_id}/preview`;
       await supabase.from('tasks')
         .update({
           result,
-          result_url: null,
+          result_url: previewUrl,
           status: 'review',
           completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
