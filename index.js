@@ -759,23 +759,30 @@ async function executeTask(task_id, user_id) {
       }
     }
 
-    // 6a. Safety net: if AI returned planning text instead of JSON, extract JSON or re-prompt
-    //     Also auto-repair malformed JSON (e.g. unescaped quotes in captions)
+    // 6a. Safety net: extract clean JSON from any wrapper (planning text, code fences, etc.)
     if (task.type === 'content' || task.source === 'playbook') {
-      // First: try to repair existing JSON if it starts with {
+      // Step 1: Strip markdown code fences wherever they appear (not just leading/trailing)
+      result = result.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim();
+
+      // Step 2: If there's planning text before the JSON, extract just the JSON block
+      if (!result.trim().startsWith('{')) {
+        const jsonMatch = result.match(/\{[\s\S]*"(?:posts|creatives)"[\s\S]*\}/);
+        if (jsonMatch) {
+          result = jsonMatch[0].trim();
+          console.log('[executor] Extracted JSON from planning text');
+        }
+      }
+
+      // Step 3: Repair malformed JSON (unescaped quotes, trailing commas, etc.)
       if (result.trim().startsWith('{')) {
         const repaired = safeParseJSON(result);
         if (repaired) {
-          result = JSON.stringify(repaired); // normalize to clean JSON
+          result = JSON.stringify(repaired);
           console.log('[executor] JSON repaired and normalized');
         }
       }
-      const jsonMatch = result.match(/\{[\s\S]*"(?:posts|creatives)"[\s\S]*\}/);
-      if (jsonMatch && !result.trim().startsWith('{')) {
-        // JSON embedded in text — extract and repair it
-        const extracted = safeParseJSON(jsonMatch[0]);
-        if (extracted) { result = JSON.stringify(extracted); console.log('[executor] Extracted + repaired JSON from AI planning text'); }
-      } else if (!result.trim().startsWith('{')) {
+
+      if (!result.trim().startsWith('{')) {
         // No JSON at all — re-ask Claude to output the structured format
         console.log('[executor] AI returned text instead of JSON — requesting structured output');
         try {
