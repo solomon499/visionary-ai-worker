@@ -256,46 +256,75 @@ Preview: [preview text, 1 sentence]
         });
         if (pageRes.ok) {
           const html = await pageRes.text();
-          // Keep structural skeleton — remove scripts/styles but preserve meaningful tags
-          const skeleton = html
-            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+
+          // Step 1: Detect structural signals BEFORE stripping
+          const hasNav = /<nav[\s>]/i.test(html);
+          const hasHeader = /<header[\s>]/i.test(html);
+          const hasVideo = /<video[\s>]|youtube\.com\/embed|vimeo\.com\/video|wistia|vidyard/i.test(html);
+          const hasPopupForm = /modal|popup|pop-up|overlay|dialog/i.test(html) && /<form[\s>]/i.test(html);
+          const hasInlineForm = /<form[\s>]/i.test(html) && !hasPopupForm;
+          const hasTimer = /countdown|timer|setInterval/i.test(html);
+          const sectionCount = (html.match(/<section[\s>]/gi) || []).length;
+
+          // Step 2: Build a READABLE version — structure + copy together
+          // Remove scripts/styles but keep ALL visible text and structural tags
+          const readable = html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, (m) => {
+              // Keep a note if it's a popup/modal script
+              if (/modal|popup|pop-up|overlay|openForm|showForm/i.test(m)) return '<!-- [POPUP/MODAL JAVASCRIPT DETECTED HERE] -->';
+              return '';
+            })
             .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-            .replace(/<!--[\s\S]*?-->/g, '')
-            // Keep structural/semantic tags with their tag names so AI sees layout
-            .replace(/<(\/?(body|main|section|header|footer|nav|article|aside|div|h[1-6]|p|img|video|iframe|form|input|button|a|ul|ol|li|span))[^>]*>/gi, (m, tag) => `<${tag}>`)
-            // Strip everything else (attributes, other tags)
-            .replace(/<(?!\/?(body|main|section|header|footer|nav|article|aside|div|h[1-6]|p|img|video|iframe|form|input|button|a|ul|ol|li|span)\b)[^>]+>/gi, '')
-            .replace(/\s{3,}/g, '\n')
+            .replace(/<!--(?!\s*\[POPUP)[\s\S]*?-->/g, '')
+            // Simplify tags — keep tag name, strip all attributes except src/href/type for context
+            .replace(/<(img|iframe|video|input|button|a|form)([^>]*)>/gi, (m, tag, attrs) => {
+              const src = (attrs.match(/src=["']([^"']+)["']/i) || [])[1] || '';
+              const href = (attrs.match(/href=["']([^"']+)["']/i) || [])[1] || '';
+              const type = (attrs.match(/type=["']([^"']+)["']/i) || [])[1] || '';
+              const onclick = /onclick|data-open|data-modal|data-popup/i.test(attrs) ? ' [HAS_CLICK_ACTION]' : '';
+              if (tag.toLowerCase() === 'iframe' && src) return `<iframe src="${src.slice(0,80)}">`;
+              if (tag.toLowerCase() === 'img') return `<img${src ? ` src="${src.slice(0,80)}"` : ''}>`;
+              if (tag.toLowerCase() === 'input') return `<input type="${type}">`;
+              if (tag.toLowerCase() === 'a') return `<a${href ? ` href="${href.slice(0,80)}"` : ''}${onclick}>`;
+              if (tag.toLowerCase() === 'button') return `<button${onclick}>`;
+              return `<${tag}>`;
+            })
+            // Strip remaining attribute bloat from structural tags
+            .replace(/<(div|section|header|footer|nav|main|article|aside|ul|ol|li|h[1-6]|p|span)[^>]*>/gi, (m, tag) => `<${tag}>`)
+            .replace(/<(?!\/?(?:body|main|section|header|footer|nav|article|aside|div|h[1-6]|p|img|video|iframe|form|input|button|a|ul|ol|li|span)\b)[^>]+>/gi, '')
+            .replace(/[ \t]{2,}/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
             .trim()
-            .slice(0, 10000);
+            .slice(0, 12000);
 
-          // Count sections to give AI a hard constraint
-          const sectionCount = (skeleton.match(/<section>/gi) || []).length;
-          const hasNav = /<nav>/i.test(skeleton);
-          const hasHeader = /<header>/i.test(skeleton);
-          const hasVideo = /<video>|<iframe>/i.test(skeleton);
-          const hasForm = /<form>/i.test(skeleton);
+          modelPageAnalysis = `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MODEL PAGE — FULL CONTENT + STRUCTURE (${modelUrl})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-          modelPageAnalysis = `\n\n━━━ MODEL PAGE STRUCTURE (URL: ${modelUrl}) ━━━
-Here is the structural skeleton of the page you must replicate — actual HTML tags preserved so you can see the exact layout:
+This is the actual content of the page — structure AND copy together so you can model both the layout AND the psychological flow of the writing:
 
-${skeleton}
+${readable}
 
-━━━ STRICT REPLICATION RULES ━━━
-You are a COPY machine, not a designer. Your job is to replicate this page's structure EXACTLY.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PAGE SIGNALS DETECTED:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Nav/header bar: ${hasNav || hasHeader ? 'YES' : 'NO'}
+- Video embed: ${hasVideo ? 'YES' : 'NO'}
+- Form delivery: ${hasPopupForm ? 'POPUP/MODAL (button triggers a pop-up form — DO NOT put form inline on page)' : hasInlineForm ? 'INLINE FORM on page' : 'NO FORM'}
+- Countdown timer: ${hasTimer ? 'YES — include working JS countdown' : 'NO'}
+- Section count: ${sectionCount > 0 ? sectionCount : 'see structure above'}
 
-SECTIONS DETECTED: ${sectionCount > 0 ? sectionCount : 'unknown — count them from the skeleton above'}
-HAS NAV/HEADER BAR: ${hasNav || hasHeader ? 'YES — include it' : 'NO — do NOT add a nav or header. The model page has none.'}
-HAS VIDEO: ${hasVideo ? 'YES — include a video placeholder' : 'NO — do not add a video unless you see one above'}
-HAS FORM: ${hasForm ? 'YES — include the form' : 'NO — do not add a form unless you see one above'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR INSTRUCTIONS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You are a COPY MACHINE for this page's structure and psychology. You are NOT a designer. Do not invent.
 
-RULES (non-negotiable):
-1. BUILD ONLY THE SECTIONS THAT EXIST IN THE MODEL. If the model has 4 sections, you build 4. Not 6, not 8. Count them. List them mentally. Build exactly those.
-2. DO NOT ADD ANYTHING that isn't in the model — no extra testimonials, no extra CTAs, no pricing tables, no FAQ, no extra headers unless the model has them
-3. If the model has NO nav bar, your page has NO nav bar. If the model has NO footer menu, yours has none.
-4. Section ORDER must match the model exactly — top to bottom
-5. Every media element (video, image, headshot) that you don't have assets for = clearly labeled placeholder box with dashed border
-6. Apply the user's brand colors/fonts and their specific offer copy — but the LAYOUT comes from the model, not from your imagination`;
+1. SECTIONS: Build ONLY the sections that exist in the model. Count them above. Build exactly that many in exactly that order.
+2. NO EXTRAS: No nav if the model has none. No extra testimonials, pricing tables, FAQ, or sections the model doesn't have. Nothing invented.
+3. COPY PSYCHOLOGY: Read the actual copy above. Model the SAME psychological pattern (hook, agitate, solution, proof, CTA) but rewritten for this user's specific offer and audience.
+4. FORM AS POPUP: ${hasPopupForm ? 'The model triggers a form in a pop-up/modal when a button is clicked. Your page MUST do the same — button click opens a modal overlay with the form inside. DO NOT put the form inline.' : 'Replicate the form delivery method shown above.'}
+5. MEDIA PLACEHOLDERS: Every video/image slot = clearly labeled dashed-border placeholder box
+6. BRAND: Apply the user\'s brand colors, fonts, and offer details — but structure and psychology come from the model`;
 
         }
       } catch (fetchErr) {
