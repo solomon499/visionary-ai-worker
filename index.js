@@ -751,6 +751,33 @@ async function executeTask(task_id, user_id) {
       }
     }
 
+    // 6a. Safety net: if AI returned planning text instead of JSON, extract JSON or re-prompt
+    if (task.type === 'content' || task.source === 'playbook') {
+      const jsonMatch = result.match(/\{[\s\S]*"(?:posts|creatives)"[\s\S]*\}/);
+      if (jsonMatch) {
+        // JSON embedded in text — extract it
+        result = jsonMatch[0].trim();
+        console.log('[executor] Extracted JSON from AI planning text');
+      } else if (!result.trim().startsWith('{')) {
+        // No JSON at all — re-ask Claude to output the structured format
+        console.log('[executor] AI returned text instead of JSON — requesting structured output');
+        try {
+          const reAsk = await claudeClient.messages.create({
+            model: 'claude-sonnet-4-5',
+            max_tokens: 8000,
+            messages: [
+              { role: 'user', content: `You previously responded with planning text instead of the required JSON output. Here was your response:\n\n${result.slice(0,500)}\n\nNow output ONLY the JSON object with the posts/creatives array. No preamble, no explanation. Start your response with { and end with }.` }
+            ],
+          });
+          const retryText = reAsk.content.find(b => b.type === 'text')?.text || '';
+          const jsonRetry = retryText.match(/\{[\s\S]*\}/);
+          if (jsonRetry) result = jsonRetry[0].trim();
+        } catch (reAskErr) {
+          console.error('[executor] Re-ask failed:', reAskErr.message);
+        }
+      }
+    }
+
     // 6. Phase 2 — fal.ai image generation for social content posts
     const isContentTask = result.trim().startsWith('{');
     if (isContentTask) {
@@ -859,6 +886,58 @@ async function executeTask(task_id, user_id) {
     }
 
     console.log(`[executor] ✅ Task ${task_id} complete — moved to review`);
+
+    // ── CARD SPLITTING: one card per piece of content ──────────────────
+    // If the result has multiple posts/creatives, split into individual child tasks.
+    // Exception: carousels and workflow sequences stay together.
+    const isCarousel = task.type === 'carousel' || (task.prompt_context?.flow || '').includes('carousel');
+    const isSequence = task.type === 'workflow' || (task.prompt_context?.flow || '').includes('sequence');
+    if (!isCarousel && !isSequence && result.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(result);
+        const items = parsed.posts || parsed.creatives || parsed.emails || parsed.ads || [];
+        if (items.length > 1) {
+          console.log(`[executor] Splitting ${items.length} items into individual review cards`);
+
+          // Create a child task for each item
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const platform = item.platform || '';
+            const itemTitle = platform
+              ? `${task.title} — ${platform} (${i + 1}/${items.length})`
+              : `${task.title} — Part ${i + 1}/${items.length}`;
+
+            await supabase.from('tasks').insert({
+              user_id,
+              title: itemTitle,
+              type: task.type,
+              status: 'review',
+              assigned_to: 'human',
+              agent: task.agent,
+              source: task.source,
+              source_id: task.source_id,
+              wave: task.wave,
+              parent_task_id: task_id,
+              result: JSON.stringify({ posts: [item] }),
+              completed_at: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+          }
+
+          // Mark parent task as split (auto-approved container — not shown in inbox)
+          await supabase.from('tasks')
+            .update({ status: 'approved', result: `Split into ${items.length} individual review cards.`, updated_at: new Date().toISOString() })
+            .eq('id', task_id);
+
+          console.log(`[executor] ✅ Split complete — ${items.length} individual cards created`);
+        }
+      } catch (splitErr) {
+        console.error('[executor] Card split error (non-fatal):', splitErr.message);
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────
+
     await supabase.from('task_notes').insert({ task_id, user_id, content: `✅ AI finished. Output is ready for your review.`, author_type: 'ai', author_name: 'OpenClaw AI' });
 
   } catch (error) {
