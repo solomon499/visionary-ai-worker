@@ -256,16 +256,47 @@ Preview: [preview text, 1 sentence]
         });
         if (pageRes.ok) {
           const html = await pageRes.text();
-          // Extract meaningful structure — strip scripts/styles, keep layout
-          const stripped = html
+          // Keep structural skeleton — remove scripts/styles but preserve meaningful tags
+          const skeleton = html
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
             .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
             .replace(/<!--[\s\S]*?-->/g, '')
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/\s{2,}/g, ' ')
+            // Keep structural/semantic tags with their tag names so AI sees layout
+            .replace(/<(\/?(body|main|section|header|footer|nav|article|aside|div|h[1-6]|p|img|video|iframe|form|input|button|a|ul|ol|li|span))[^>]*>/gi, (m, tag) => `<${tag}>`)
+            // Strip everything else (attributes, other tags)
+            .replace(/<(?!\/?(body|main|section|header|footer|nav|article|aside|div|h[1-6]|p|img|video|iframe|form|input|button|a|ul|ol|li|span)\b)[^>]+>/gi, '')
+            .replace(/\s{3,}/g, '\n')
             .trim()
-            .slice(0, 8000); // cap at 8k chars
-          modelPageAnalysis = `\n\nMODEL PAGE ANALYSIS (URL: ${modelUrl})\nYou fetched this page. Here is its text content — use it to extract the exact section structure, sales psychology flow, CTA placement, and content hierarchy:\n\n${stripped}\n\nREQUIREMENTS FOR MATCHING THE MODEL:\n- Match the EXACT section order and layout pattern of the model page\n- If model has a hero → headline + subheadline + CTA button, reproduce that structure\n- If model has a video section, add a video placeholder (branded box with play button icon + text "[ VIDEO: Owner's name — insert your video here ]")\n- If model has a pop-up (e.g. on CTA click), reproduce the pop-up functionality with JavaScript\n- If model has testimonials, include testimonial slots (use placeholder names/quotes)\n- If model has a guarantee section, include one\n- If model has a countdown timer, include a working JavaScript countdown\n- Every section that needs real media (video, product image, headshot) must show a clearly labeled placeholder box instead of a broken image\n- Apply the user's brand colors, fonts, offer copy, and product details — but follow the MODEL's psychological structure exactly`;
+            .slice(0, 10000);
+
+          // Count sections to give AI a hard constraint
+          const sectionCount = (skeleton.match(/<section>/gi) || []).length;
+          const hasNav = /<nav>/i.test(skeleton);
+          const hasHeader = /<header>/i.test(skeleton);
+          const hasVideo = /<video>|<iframe>/i.test(skeleton);
+          const hasForm = /<form>/i.test(skeleton);
+
+          modelPageAnalysis = `\n\n━━━ MODEL PAGE STRUCTURE (URL: ${modelUrl}) ━━━
+Here is the structural skeleton of the page you must replicate — actual HTML tags preserved so you can see the exact layout:
+
+${skeleton}
+
+━━━ STRICT REPLICATION RULES ━━━
+You are a COPY machine, not a designer. Your job is to replicate this page's structure EXACTLY.
+
+SECTIONS DETECTED: ${sectionCount > 0 ? sectionCount : 'unknown — count them from the skeleton above'}
+HAS NAV/HEADER BAR: ${hasNav || hasHeader ? 'YES — include it' : 'NO — do NOT add a nav or header. The model page has none.'}
+HAS VIDEO: ${hasVideo ? 'YES — include a video placeholder' : 'NO — do not add a video unless you see one above'}
+HAS FORM: ${hasForm ? 'YES — include the form' : 'NO — do not add a form unless you see one above'}
+
+RULES (non-negotiable):
+1. BUILD ONLY THE SECTIONS THAT EXIST IN THE MODEL. If the model has 4 sections, you build 4. Not 6, not 8. Count them. List them mentally. Build exactly those.
+2. DO NOT ADD ANYTHING that isn't in the model — no extra testimonials, no extra CTAs, no pricing tables, no FAQ, no extra headers unless the model has them
+3. If the model has NO nav bar, your page has NO nav bar. If the model has NO footer menu, yours has none.
+4. Section ORDER must match the model exactly — top to bottom
+5. Every media element (video, image, headshot) that you don't have assets for = clearly labeled placeholder box with dashed border
+6. Apply the user's brand colors/fonts and their specific offer copy — but the LAYOUT comes from the model, not from your imagination`;
+
         }
       } catch (fetchErr) {
         console.warn(`[executor] Could not fetch model page: ${fetchErr.message}`);
@@ -275,15 +306,14 @@ Preview: [preview text, 1 sentence]
 
     taskInstruction = `Build a complete, fully functional HTML/CSS/JS landing page.
 Page type: ${funnelType}
-${modelUrl ? `Model page: ${modelUrl} — your page MUST match its section structure and sales psychology exactly.` : ''}
+${modelUrl ? `You are modeling this page: ${modelUrl}` : ''}
 
-CRITICAL RULES:
-1. Return ONLY the complete HTML document — no explanation, no markdown, no code fences
-2. Use inline CSS only (no external stylesheets except Google Fonts via <link>)
-3. All JavaScript must be inline in <script> tags
-4. Every section that needs media the user hasn't provided (video, product photo, headshot) must render as a clearly labeled placeholder: a styled box with dashed border and text like "[ VIDEO: Paste your embed code here ]" or "[ IMAGE: Upload your product photo here ]" — this signals what the owner needs to provide
-5. Pop-ups, countdown timers, smooth scroll, and any interactive elements from the model page must be reproduced with working JavaScript
-6. Apply the user's brand and offer details from the BRAND and OFFER sections below${modelPageAnalysis}`;
+OUTPUT RULES (absolute):
+1. Return ONLY the raw HTML document — no explanation, no markdown, no code fences, nothing before <!DOCTYPE
+2. Inline CSS only (no external stylesheets except Google Fonts via <link>)
+3. All JS inline in <script> tags
+4. Missing media = placeholder box with dashed border and clear label
+5. Working JS for any interactive elements (pop-ups, timers, smooth scroll)${modelPageAnalysis}`;
   } else if (task.type === 'email') {
     // All email tasks: output ONLY the email, nothing else
     const basePrompt = task.prompt || `Write an email for: ${task.title}`;
