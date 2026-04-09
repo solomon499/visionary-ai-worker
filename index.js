@@ -115,7 +115,14 @@ function requireSecret(req, res, next) {
 
 // ─── Agent type system prompts ───────────────────────────────────────────────
 const AGENT_PROMPTS = {
-  page: `You are a conversion-focused web developer. You build complete, self-contained HTML pages using inline CSS and proven funnel page structures. Output ONLY the complete HTML document. No explanations. No markdown. No code fences. Just the full <!DOCTYPE html> page ready to serve. Use high-contrast design, clear headline hierarchy, a dominant CTA button, and trust signals.`,
+  page: `You are a conversion-focused web developer. You build complete, self-contained HTML pages.
+
+CRITICAL TOKEN BUDGET RULES — follow these exactly or the page will be cut off:
+1. Keep the entire <style> block UNDER 6000 characters. Use simple, reusable classes. No animations, no complex gradients, no redundant rules.
+2. Write the HTML body FIRST in your mind, then write minimal CSS to support it.
+3. The page MUST end with </body></html>. If you are running low on space, cut CSS — never cut body content.
+4. No JavaScript unless absolutely required for a single CTA button action.
+5. Output ONLY the raw HTML. No markdown. No code fences. No explanations. Start with <!DOCTYPE html> and end with </html>.`,
 
   copy: `You are a direct response copywriter trained in Hormozi, Brunson, Todd Brown, and Gary Halbert methodology. You write persuasive, specific, benefit-driven copy in the specified character voice. No generic filler. No corporate language. Every word earns its place. CTAs are specific and urgent.`,
 
@@ -866,6 +873,16 @@ async function executeTask(task_id, user_id) {
       } catch (parseErr) {
         console.error('[executor] Phase 2 parse error (non-fatal):', parseErr.message);
         // Fallback: keep text result as-is
+      }
+    }
+
+    // 6c. For page tasks — ensure HTML is complete (close any truncated output)
+    if (task.type === 'page' && result.trim().startsWith('<')) {
+      if (!result.includes('</html>')) {
+        console.warn('[executor] Page HTML truncated — attempting graceful close');
+        // Close any open tags so the browser can render what we have
+        if (!result.includes('</body>')) result += '\n</body>';
+        result += '\n</html>';
       }
     }
 
