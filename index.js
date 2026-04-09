@@ -144,16 +144,19 @@ async function buildPrompt(task, userId) {
     brandName = brand.user_brand_name || '';
   }
 
-  // Load business brain sections
+  // Load business brain sections — cap each section to control token cost
+  // Full docs can be 30k+ chars; we extract the most relevant portion per task type
+  const BRAIN_CAP = 3000; // ~750 tokens per section — enough context without burning budget
   let character = '', ica = '', vision = '', leadMagnets = '', paidOffers = '';
   const { data: brainRows } = await supabase.from('business_brain').select('section, content').eq('user_id', userId);
   if (brainRows) {
     for (const row of brainRows) {
-      if (row.section === 'character') character = row.content || '';
-      if (row.section === 'ica') ica = row.content || '';
-      if (row.section === 'vision') vision = row.content || '';
-      if (row.section === 'lead_magnets') leadMagnets = row.content || '';
-      if (row.section === 'paid_offers') paidOffers = row.content || '';
+      const content = (row.content || '').slice(0, BRAIN_CAP);
+      if (row.section === 'character') character = content;
+      if (row.section === 'ica') ica = content;
+      if (row.section === 'vision') vision = content;
+      if (row.section === 'lead_magnets') leadMagnets = content;
+      if (row.section === 'paid_offers') paidOffers = content;
     }
   }
 
@@ -539,10 +542,10 @@ async function executeTask(task_id, user_id) {
 
     // 4. Build prompt
     const { system, userMessage } = await buildPrompt(task, user_id);
-    // Funnel page/bot builds get Opus — highest quality for high-value deliverables
-    const isFunnelBuild = task.source === 'get-sales' && ['page', 'bot'].includes(task.type);
-    const model = isFunnelBuild ? 'claude-opus-4-6' : (conn.ai_model || 'claude-sonnet-4-6');
-    console.log(`[executor] Model: ${model} (funnel build: ${isFunnelBuild})`);
+    // Always use Sonnet unless user explicitly configured a different model
+    // Opus is 5x more expensive — do not use automatically
+    const model = conn.ai_model || 'claude-sonnet-4-6';
+    console.log(`[executor] Model: ${model}`);
 
     console.log(`[executor] Calling Anthropic for task ${task_id} with model ${model}`);
 
@@ -556,7 +559,7 @@ async function executeTask(task_id, user_id) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: task.type === 'page' ? 16000 : 4096,
+        max_tokens: task.type === 'page' ? 8000 : 4096,
         system,
         messages: [{ role: 'user', content: userMessage }],
       }),
