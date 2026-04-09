@@ -761,6 +761,44 @@ async function promoteScheduledTasks() {
 setInterval(promoteScheduledTasks, 60000); // every 60 seconds
 console.log('[scheduler] Schedule poller started — promoting due tasks every 60s');
 
+// ─── Stuck-task watchdog: auto-reset tasks stuck in 'working' > 8 min ────────
+async function resetStuckTasks() {
+  try {
+    const cutoff = new Date(Date.now() - 8 * 60 * 1000).toISOString(); // 8 minutes ago
+    const { data: stuckTasks, error } = await supabase
+      .from('tasks')
+      .select('id, title, attempts')
+      .eq('status', 'working')
+      .lt('updated_at', cutoff)
+      .limit(10);
+
+    if (error) { console.error('[watchdog] Supabase error:', error.message); return; }
+    if (!stuckTasks || stuckTasks.length === 0) return;
+
+    console.log(`[watchdog] Found ${stuckTasks.length} stuck task(s) — resetting to queued`);
+
+    for (const task of stuckTasks) {
+      // If already attempted 3+ times, mark failed instead of looping forever
+      if ((task.attempts || 0) >= 3) {
+        await supabase.from('tasks')
+          .update({ status: 'failed', last_error: 'Task timed out after 3 attempts', updated_at: new Date().toISOString() })
+          .eq('id', task.id).eq('status', 'working');
+        console.log(`[watchdog] Task ${task.id} (${task.title}) → failed (3 attempts exhausted)`);
+      } else {
+        await supabase.from('tasks')
+          .update({ status: 'queued', updated_at: new Date().toISOString() })
+          .eq('id', task.id).eq('status', 'working');
+        console.log(`[watchdog] Task ${task.id} (${task.title}) → re-queued (was stuck)`);
+      }
+    }
+  } catch (err) {
+    console.error('[watchdog] Error:', err.message);
+  }
+}
+
+setInterval(resetStuckTasks, 60000); // check every minute
+console.log('[watchdog] Stuck-task watchdog started — checking every 60s');
+
 // ─── Escalation poller: alert on stale tasks (48h+ without progress) ─────────
 let lastEscalationCheck = 0;
 async function checkStaleTasksAndEscalate() {
