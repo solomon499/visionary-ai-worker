@@ -500,12 +500,125 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
     ? `\n\n⚠️ REVISION INSTRUCTIONS (this is a revised version — the previous output was rejected):\n${revisionFeedback}\n\nYou MUST address every point above. Do not repeat the previous version. Improve it based on this specific feedback.`
     : '';
 
-  return {
-    system: `${baseSystemPrompt}
+  // Lean system prompt — Claude fetches context via tools instead of receiving it all upfront
+  // This dramatically reduces input token cost while giving Claude access to full content on demand
+  const toolGuidance = `\n\nYOU HAVE TOOLS. Before executing any task:
+1. Call get_knowledge_base() for the sections relevant to this task (brand, ica, paid_offers, etc.)
+2. Call get_playbook() if a playbook slug was provided in the task
+3. Call get_offer() if an offer_id was provided
+4. Call get_brand() if you need logo/colors/fonts
+5. Call get_memory() if you need remembered context about this business
+Only fetch what you actually need. Then produce the deliverable.`;
 
-${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}${leadMagnets ? `LEAD MAGNETS:\n${leadMagnets}\n\n` : ''}${paidOffers ? `PAID OFFERS:\n${paidOffers}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}${memoryContext}`,
+  return {
+    system: baseSystemPrompt + toolGuidance + workflowSystemAddendum,
     userMessage: taskInstruction + notesAddendum + revisionAddendum
   };
+}
+
+// ─── TOOL DEFINITIONS ──────────────────────────────────────────────────────
+const CLAUDE_TOOLS = [
+  {
+    name: 'get_knowledge_base',
+    description: "Read a section of the user's business knowledge base. Available sections: vision (business goals, strategy), ica (ideal customer profile), brand (brand identity, voice), character (AI character/persona voice), lead_magnets (free offers), paid_offers (products/services/pricing). Call this FIRST before creating any content.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        section: { type: 'string', enum: ['vision', 'ica', 'brand', 'character', 'lead_magnets', 'paid_offers'] }
+      },
+      required: ['section']
+    }
+  },
+  {
+    name: 'get_playbook',
+    description: 'Read a specific playbook by slug to get exact instructions, templates, and structure.',
+    input_schema: {
+      type: 'object',
+      properties: { slug: { type: 'string' } },
+      required: ['slug']
+    }
+  },
+  {
+    name: 'get_offer',
+    description: 'Read details of a specific offer — pricing, description, benefits, positioning.',
+    input_schema: {
+      type: 'object',
+      properties: { offer_id: { type: 'string' } },
+      required: ['offer_id']
+    }
+  },
+  {
+    name: 'get_brand',
+    description: "Read the user's brand settings: logo URL, brand name, colors, fonts.",
+    input_schema: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'get_memory',
+    description: 'Read AI memory notes for this user — important context the AI has learned.',
+    input_schema: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'update_knowledge_base',
+    description: 'Write new or updated information to a knowledge base section when you discover important business context that should be remembered.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        section: { type: 'string', enum: ['vision', 'ica', 'brand', 'character', 'lead_magnets', 'paid_offers'] },
+        content: { type: 'string' },
+        mode: { type: 'string', enum: ['replace', 'append'] }
+      },
+      required: ['section', 'content']
+    }
+  }
+];
+
+// ─── TOOL EXECUTOR ─────────────────────────────────────────────────────────
+async function executeTool(toolName, toolInput, userId) {
+  console.log(`[tool] Executing ${toolName}:`, JSON.stringify(toolInput).slice(0, 100));
+  try {
+    switch (toolName) {
+      case 'get_knowledge_base': {
+        const { data } = await supabase.from('business_brain')
+          .select('content').eq('user_id', userId).eq('section', toolInput.section).single();
+        return data?.content || `Section '${toolInput.section}' is empty. No content uploaded yet.`;
+      }
+      case 'get_playbook': {
+        const { data } = await supabase.from('playbook_prompts')
+          .select('prompt_text, name').eq('slug', toolInput.slug).single();
+        return data ? `PLAYBOOK: ${data.name}\n\n${data.prompt_text}` : `Playbook not found: ${toolInput.slug}`;
+      }
+      case 'get_offer': {
+        const { data } = await supabase.from('offers').select('*').eq('id', toolInput.offer_id).single();
+        return data ? JSON.stringify(data, null, 2) : `Offer not found: ${toolInput.offer_id}`;
+      }
+      case 'get_brand': {
+        const { data } = await supabase.from('brand_docs').select('*').eq('user_id', userId).limit(1).single();
+        return data ? JSON.stringify(data, null, 2) : 'No brand settings configured yet.';
+      }
+      case 'get_memory': {
+        const { data } = await supabase.from('agent_memory')
+          .select('key, value, category').eq('user_id', userId).order('category');
+        if (!data?.length) return 'No memories stored yet.';
+        return data.map(m => `[${m.category}] ${m.key}: ${m.value}`).join('\n');
+      }
+      case 'update_knowledge_base': {
+        const { section, content, mode = 'replace' } = toolInput;
+        let finalContent = content;
+        if (mode === 'append') {
+          const { data: existing } = await supabase.from('business_brain')
+            .select('content').eq('user_id', userId).eq('section', section).single();
+          if (existing?.content) finalContent = existing.content + '\n\n---\n\n' + content;
+        }
+        await supabase.from('business_brain')
+          .upsert({ user_id: userId, section, content: finalContent, last_updated_at: new Date().toISOString() }, { onConflict: 'user_id,section' });
+        return `✅ Updated '${section}' (${finalContent.length} chars).`;
+      }
+      default:
+        return `Unknown tool: ${toolName}`;
+    }
+  } catch (err) {
+    return `Tool error: ${err.message}`;
+  }
 }
 
 // Core execution logic — callable from HTTP route AND the poller
@@ -540,38 +653,72 @@ async function executeTask(task_id, user_id) {
       return;
     }
 
-    // 4. Build prompt
+    // 4. Build lean task instruction (no pre-loaded context — Claude fetches what it needs)
     const { system, userMessage } = await buildPrompt(task, user_id);
-    // Always use Sonnet unless user explicitly configured a different model
-    // Opus is 5x more expensive — do not use automatically
     const model = conn.ai_model || 'claude-sonnet-4-6';
-    console.log(`[executor] Model: ${model}`);
+    console.log(`[executor] Model: ${model} — agentic tool-calling mode`);
 
-    console.log(`[executor] Calling Anthropic for task ${task_id} with model ${model}`);
+    // 5. Agentic loop — Claude reads task, calls tools to fetch context, then produces output
+    const messages = [{ role: 'user', content: userMessage }];
+    const MAX_TOOL_ROUNDS = 6;
+    let result = '';
 
-    // 5. Call Anthropic — no timeout pressure here
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': conn.anthropic_api_key,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: task.type === 'page' ? 8000 : 4096,
-        system,
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-    });
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': conn.anthropic_api_key,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: task.type === 'page' ? 8000 : 4096,
+          system,
+          tools: CLAUDE_TOOLS,
+          messages,
+        }),
+      });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Anthropic ${response.status}: ${errText}`);
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Anthropic ${response.status}: ${errText}`);
+      }
+
+      const data = await response.json();
+      const stopReason = data.stop_reason;
+      console.log(`[executor] Round ${round + 1}: stop_reason=${stopReason}, blocks=${data.content?.length}`);
+
+      // Add assistant response to message history
+      messages.push({ role: 'assistant', content: data.content });
+
+      if (stopReason === 'end_turn') {
+        // Extract final text result
+        result = data.content?.find(b => b.type === 'text')?.text || '';
+        break;
+      }
+
+      if (stopReason === 'tool_use') {
+        // Execute all tool calls in parallel
+        const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
+        const toolResults = await Promise.all(
+          toolUseBlocks.map(async (block) => {
+            const toolOutput = await executeTool(block.name, block.input, user_id);
+            return {
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: String(toolOutput),
+            };
+          })
+        );
+        messages.push({ role: 'user', content: toolResults });
+        continue;
+      }
+
+      // max_tokens or other stop — extract what we have
+      result = data.content?.find(b => b.type === 'text')?.text || '';
+      break;
     }
-
-    const data = await response.json();
-    let result = data.content?.[0]?.text || '';
 
     // Strip markdown code fences (```html ... ``` or ```json ... ``` or ``` ... ```)
     result = result.replace(/^```[a-z]*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
