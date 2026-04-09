@@ -158,6 +158,21 @@ async function buildPrompt(task, userId) {
     if (pb) playbookText = pb.prompt_text || '';
   }
 
+  // Load agent memory for this user
+  let memoryContext = '';
+  try {
+    const { data: memories } = await supabase
+      .from('agent_memory')
+      .select('key, value, category')
+      .eq('user_id', userId)
+      .order('category');
+    if (memories && memories.length > 0) {
+      memoryContext = `\n\nMember Context (remembered by AI):\n${memories.map(m => `- ${m.key}: ${m.value}`).join('\n')}`;
+    }
+  } catch (memErr) {
+    console.warn('[buildPrompt] Could not load agent memory:', memErr.message);
+  }
+
   const voice = ctx.voice || 'character';
   const topic = ctx.topic || '';
   const flow = ctx.flow || task.type;
@@ -367,7 +382,7 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
   return {
     system: `${baseSystemPrompt}
 
-${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}${leadMagnets ? `LEAD MAGNETS:\n${leadMagnets}\n\n` : ''}${paidOffers ? `PAID OFFERS:\n${paidOffers}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}`,
+${playbookText ? `PLAYBOOK (follow this structure exactly):\n${playbookText}\n\n` : ''}${brandContext ? `BRAND:\n${brandContext}\n\n` : ''}${offer ? `OFFER:\n${JSON.stringify(offer, null, 2)}\n\n` : ''}${character ? `CHARACTER VOICE:\n${character}\n\n` : ''}${ica ? `IDEAL CUSTOMER:\n${ica}\n\n` : ''}${vision ? `VISION:\n${vision}\n\n` : ''}${leadMagnets ? `LEAD MAGNETS:\n${leadMagnets}\n\n` : ''}${paidOffers ? `PAID OFFERS:\n${paidOffers}\n\n` : ''}VOICE INSTRUCTION: ${voiceInstruction}${workflowSystemAddendum}${memoryContext}`,
     userMessage: taskInstruction + notesAddendum
   };
 }
