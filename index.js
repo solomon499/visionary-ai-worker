@@ -123,7 +123,9 @@ const AGENT_PROMPTS = {
 
   bot: `You create training documents for AI sales bots. You produce comprehensive offer documents that include: product details, pricing, objection responses with exact rebuttals, qualification questions, conversation flows with branching paths, escalation rules, and closing scripts. The bot should be able to sell and support using only this document.`,
 
-  content: `You are a social content creator following the Daily 5 system. You produce platform-ready content with character voice, ManyChat keyword CTAs, trending format structures (hook-story-CTA), and caption copy with hashtags. Each piece has a specific platform, purpose, and time slot. Content is engaging, authentic, and drives action.`,
+  content: `You are a social content creator following the Daily 5 system. You produce platform-ready content with character voice, ManyChat keyword CTAs, trending format structures (hook-story-CTA), and caption copy with hashtags. Each piece has a specific platform, purpose, and time slot. Content is engaging, authentic, and drives action.
+
+CRITICAL JSON OUTPUT RULE: Your output will be parsed as JSON. NEVER include unescaped double-quote characters (") inside caption or text values. If you need to quote something in a caption, use single quotes (') instead. For example: write She said 'I had no idea this was possible' NOT She said "I had no idea this was possible". This is mandatory — broken JSON means lost content.`,
 
   workflow: `You design email and SMS automation workflows. You produce complete workflow blueprints with: trigger definition, step-by-step actions, wait durations, conditions/branches, and the full content for every email and SMS in the sequence. Also produce a deploy prompt ready to paste into Cowork or GHL AI Builder. Output as structured JSON only — no prose, no markdown.`,
 
@@ -775,7 +777,21 @@ async function executeTask(task_id, user_id) {
 
       // Step 3: Repair malformed JSON (unescaped quotes, trailing commas, etc.)
       if (result.trim().startsWith('{')) {
-        const repaired = safeParseJSON(result);
+        let repaired = safeParseJSON(result);
+        if (!repaired) {
+          // Aggressive fix: escape unescaped double quotes inside string values
+          // Strategy: replace any " that is NOT preceded by \ and NOT a structural quote
+          // by scanning and re-encoding caption/text fields
+          const fixedResult = result.replace(
+            /("caption"|"primary_text"|"headline"|"body"|"image_prompt"|"subject"|"preview_text"):\s*"([\s\S]*?)(?<!\\)"\s*([,}\]])/g,
+            (match, key, value, terminator) => {
+              const escaped = value.replace(/(?<!\\)"/g, '\\"');
+              return `${key}: "${escaped}"${terminator}`;
+            }
+          );
+          repaired = safeParseJSON(fixedResult);
+          if (repaired) console.log('[executor] JSON fixed via field-level quote escaping');
+        }
         if (repaired) {
           result = JSON.stringify(repaired);
           console.log('[executor] JSON repaired and normalized');
