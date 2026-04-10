@@ -140,7 +140,7 @@ CRITICAL JSON OUTPUT RULE: Your output will be parsed as JSON. NEVER include une
 };
 
 // Build system prompt from task + business brain
-async function buildPrompt(task, userId) {
+async function buildPrompt(task, userId, connectedToolsList = '') {
   const ctx = task.prompt_context || {};
 
   // Load offer data
@@ -527,8 +527,12 @@ Follow the playbook methodology exactly. Use the user's specific answers to cust
 5. Call get_memory() if you need remembered context about this business
 Only fetch what you actually need. Then produce the deliverable.`;
 
+  const connectedToolsAddendum = connectedToolsList
+    ? `\n\nCONNECTED TOOLS: ${connectedToolsList}`
+    : '';
+
   return {
-    system: baseSystemPrompt + toolGuidance + workflowSystemAddendum,
+    system: baseSystemPrompt + toolGuidance + workflowSystemAddendum + connectedToolsAddendum,
     userMessage: taskInstruction + notesAddendum + revisionAddendum
   };
 }
@@ -670,8 +674,33 @@ async function executeTask(task_id, user_id) {
       return;
     }
 
+    // 4a. Load all per-user tool integrations for context
+    const { data: userIntegrations } = await supabase
+      .from('integrations')
+      .select('service_name, api_key_encrypted, config, connection_status')
+      .eq('user_id', user_id)
+      .eq('connection_status', 'connected');
+
+    const { data: userOauthTokens } = await supabase
+      .from('oauth_tokens')
+      .select('service, access_token, metadata')
+      .eq('user_id', user_id);
+
+    // Build a credentials map for use in prompts + tool execution
+    const userCreds = {};
+    (userIntegrations || []).forEach(i => {
+      userCreds[i.service_name] = { key: i.api_key_encrypted, config: i.config };
+    });
+    (userOauthTokens || []).forEach(t => {
+      userCreds[t.service] = { ...userCreds[t.service], token: t.access_token, metadata: t.metadata };
+    });
+    const connectedToolsList = Object.keys(userCreds)
+      .filter(k => userCreds[k]?.key || userCreds[k]?.token)
+      .join(', ');
+    console.log(`[executor] Connected tools for user ${user_id}: ${connectedToolsList || 'none'}`);
+
     // 4. Build lean task instruction (no pre-loaded context — Claude fetches what it needs)
-    const { system, userMessage } = await buildPrompt(task, user_id);
+    const { system, userMessage } = await buildPrompt(task, user_id, connectedToolsList);
     const model = conn.ai_model || 'claude-sonnet-4-6';
     console.log(`[executor] Model: ${model} — agentic tool-calling mode`);
 
