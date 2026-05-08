@@ -984,15 +984,20 @@ async function executeTask(task_id, user_id) {
     if (!isCarousel && !isSequence) {
 
       // ── MARKDOWN SPLITTING (new Markdown-output format) ──
+      // Strip any Claude preamble before the first heading
+      let cleanResult = result;
+      const firstHeading = result.search(/^#{1,3} /m);
+      if (firstHeading > 0) cleanResult = result.slice(firstHeading);
+
       // Split on --- separators between ## Piece sections
-      const isMarkdownMultiPiece = !result.trim().startsWith('{') &&
-        (result.match(/^## /m) || result.match(/^# /m)) &&
-        result.includes('\n---');
+      const isMarkdownMultiPiece = !cleanResult.trim().startsWith('{') &&
+        (cleanResult.match(/^## /m) || cleanResult.match(/^# /m)) &&
+        cleanResult.includes('\n---');
 
       if (isMarkdownMultiPiece) {
         try {
           // Split on hr separators
-          const rawPieces = result.split(/\n---+\n/).map(s => s.trim()).filter(Boolean);
+          const rawPieces = cleanResult.split(/\n---+\n/).map(s => s.trim()).filter(Boolean);
 
           // Only split if there are multiple actual content pieces
           if (rawPieces.length > 1) {
