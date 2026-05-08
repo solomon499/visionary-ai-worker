@@ -132,6 +132,8 @@ CRITICAL TOKEN BUDGET RULES — follow these exactly or the page will be cut off
 
   content: `You are a social content creator following the Daily 5 system. You produce platform-ready content with character voice, ManyChat keyword CTAs, trending format structures (hook-story-CTA), and caption copy with hashtags. Each piece has a specific platform, purpose, and time slot. Content is engaging, authentic, and drives action.
 
+⚠️ OUTPUT FORMAT — NON-NEGOTIABLE: Write in clean Markdown ONLY. Use ## for each piece title, ### for sub-sections, > for scripts/voiceovers, - for visual directions, plain paragraphs for captions. NEVER output JSON, curly braces, brackets, or key-value pairs. A non-technical human must be able to read and use this output immediately.
+
 CRITICAL JSON OUTPUT RULE: Your output will be parsed as JSON. NEVER include unescaped double-quote characters (") inside caption or text values. If you need to quote something in a caption, use single quotes (') instead. For example: write She said 'I had no idea this was possible' NOT She said "I had no idea this was possible". This is mandatory — broken JSON means lost content.`,
 
   workflow: `You design email and SMS automation workflows. You produce complete workflow blueprints with: trigger definition, step-by-step actions, wait durations, conditions/branches, and the full content for every email and SMS in the sequence. Also produce a deploy prompt ready to paste into Cowork or GHL AI Builder. Output as structured JSON only — no prose, no markdown.`,
@@ -974,52 +976,107 @@ async function executeTask(task_id, user_id) {
     console.log(`[executor] ✅ Task ${task_id} complete — moved to review`);
 
     // ── CARD SPLITTING: one card per piece of content ──────────────────
-    // If the result has multiple posts/creatives, split into individual child tasks.
-    // Exception: carousels and workflow sequences stay together.
+    // Splits multi-piece results (Markdown or JSON) into individual review cards.
+    // Exception: carousels and workflow sequences stay as one card.
     const isCarousel = task.type === 'carousel' || (task.prompt_context?.flow || '').includes('carousel');
     const isSequence = task.type === 'workflow' || (task.prompt_context?.flow || '').includes('sequence');
-    if (!isCarousel && !isSequence && result.trim().startsWith('{')) {
-      try {
-        const parsed = safeParseJSON(result); if (!parsed) throw new Error("JSON repair failed");
-        const items = parsed.posts || parsed.creatives || parsed.emails || parsed.ads || [];
-        if (items.length > 1) {
-          console.log(`[executor] Splitting ${items.length} items into individual review cards`);
 
-          // Create a child task for each item
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            const platform = item.platform || '';
-            const itemTitle = platform
-              ? `${task.title} — ${platform} (${i + 1}/${items.length})`
-              : `${task.title} — Part ${i + 1}/${items.length}`;
+    if (!isCarousel && !isSequence) {
 
-            const insertRes = await supabase.from('tasks').insert({
-              user_id,
-              title: itemTitle,
-              type: task.type,
-              status: 'review',
-              assigned_to: 'human',
-              agent: task.agent,
-              source: task.source,
-              source_id: task_id,   // use source_id to link back to parent
-              wave: task.wave,
-              result: JSON.stringify({ posts: [item] }),
-              completed_at: new Date().toISOString(),
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            });
-            if (insertRes.error) console.error(`[executor] Child insert error:`, insertRes.error.message);
+      // ── MARKDOWN SPLITTING (new Markdown-output format) ──
+      // Split on --- separators between ## Piece sections
+      const isMarkdownMultiPiece = !result.trim().startsWith('{') &&
+        (result.match(/^## /m) || result.match(/^# /m)) &&
+        result.includes('\n---');
+
+      if (isMarkdownMultiPiece) {
+        try {
+          // Split on hr separators
+          const rawPieces = result.split(/\n---+\n/).map(s => s.trim()).filter(Boolean);
+
+          // Only split if there are multiple actual content pieces
+          if (rawPieces.length > 1) {
+            console.log(`[executor] Splitting ${rawPieces.length} Markdown pieces into individual cards`);
+
+            for (let i = 0; i < rawPieces.length; i++) {
+              const pieceContent = rawPieces[i];
+              // Extract title from first ## heading
+              const headingMatch = pieceContent.match(/^#{1,3} (.+)/m);
+              const pieceTitle = headingMatch
+                ? headingMatch[1].trim()
+                : `${task.title} — Part ${i + 1}`;
+
+              // Extract platform hint from title if present (e.g. "Instagram", "Facebook")
+              const platformMatch = pieceTitle.match(/\b(instagram|facebook|youtube|tiktok|linkedin|twitter|x)\b/i);
+              const agentType = platformMatch ? platformMatch[1].toLowerCase() : (task.agent_type || task.type || 'content');
+
+              const insertRes = await supabase.from('tasks').insert({
+                user_id,
+                title: pieceTitle,
+                type: agentType,
+                agent_type: agentType,
+                status: 'review',
+                assigned_to: 'human',
+                source: task.source,
+                source_id: task_id,
+                playbook_slug: task.playbook_slug,
+                result: pieceContent,
+                completed_at: new Date().toISOString(),
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              });
+              if (insertRes.error) console.error(`[executor] Markdown child insert error:`, insertRes.error.message);
+            }
+
+            // Mark parent as split — hidden from inbox
+            await supabase.from('tasks')
+              .update({ status: 'approved', result: `Split into ${rawPieces.length} individual content cards.`, updated_at: new Date().toISOString() })
+              .eq('id', task_id);
+
+            console.log(`[executor] ✅ Markdown split complete — ${rawPieces.length} cards created`);
           }
-
-          // Mark parent task as split (auto-approved container — not shown in inbox)
-          await supabase.from('tasks')
-            .update({ status: 'approved', result: `Split into ${items.length} individual review cards.`, updated_at: new Date().toISOString() })
-            .eq('id', task_id);
-
-          console.log(`[executor] ✅ Split complete — ${items.length} individual cards created`);
+        } catch (mdSplitErr) {
+          console.error('[executor] Markdown card split error (non-fatal):', mdSplitErr.message);
         }
-      } catch (splitErr) {
-        console.error('[executor] Card split error (non-fatal):', splitErr.message);
+
+      // ── JSON SPLITTING (legacy JSON-output format) ──
+      } else if (result.trim().startsWith('{')) {
+        try {
+          const parsed = safeParseJSON(result); if (!parsed) throw new Error("JSON repair failed");
+          const items = parsed.posts || parsed.creatives || parsed.emails || parsed.ads || [];
+          if (items.length > 1) {
+            console.log(`[executor] Splitting ${items.length} JSON items into individual review cards`);
+            for (let i = 0; i < items.length; i++) {
+              const item = items[i];
+              const platform = item.platform || '';
+              const itemTitle = platform
+                ? `${task.title} — ${platform} (${i + 1}/${items.length})`
+                : `${task.title} — Part ${i + 1}/${items.length}`;
+              const insertRes = await supabase.from('tasks').insert({
+                user_id,
+                title: itemTitle,
+                type: task.type,
+                status: 'review',
+                assigned_to: 'human',
+                agent: task.agent,
+                source: task.source,
+                source_id: task_id,
+                wave: task.wave,
+                result: JSON.stringify({ posts: [item] }),
+                completed_at: new Date().toISOString(),
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              });
+              if (insertRes.error) console.error(`[executor] Child insert error:`, insertRes.error.message);
+            }
+            await supabase.from('tasks')
+              .update({ status: 'approved', result: `Split into ${items.length} individual review cards.`, updated_at: new Date().toISOString() })
+              .eq('id', task_id);
+            console.log(`[executor] ✅ JSON split complete — ${items.length} individual cards created`);
+          }
+        } catch (splitErr) {
+          console.error('[executor] JSON card split error (non-fatal):', splitErr.message);
+        }
       }
     }
     // ──────────────────────────────────────────────────────────────────
