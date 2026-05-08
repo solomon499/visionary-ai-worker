@@ -996,8 +996,9 @@ async function executeTask(task_id, user_id) {
 
       if (isMarkdownMultiPiece) {
         try {
-          // Split on hr separators
-          const rawPieces = cleanResult.split(/\n---+\n/).map(s => s.trim()).filter(Boolean);
+          // Split ONLY on --- that precedes a top-level ## heading (piece boundary).
+          // This keeps carousel slides (### Slide N) together inside their piece.
+          const rawPieces = cleanResult.split(/\n---+\n(?=#{1,2} )/).map(s => s.trim()).filter(Boolean);
 
           // Only split if there are multiple actual content pieces
           if (rawPieces.length > 1) {
