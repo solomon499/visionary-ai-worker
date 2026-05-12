@@ -669,6 +669,42 @@ async function executeTask(task_id, user_id) {
       .single();
 
     if (!conn?.anthropic_api_key) {
+      // Fallback: check oauth_tokens for key saved via Settings → Connections essentials form
+      const { data: claudeToken } = await supabase
+        .from('oauth_tokens')
+        .select('access_token')
+        .eq('user_id', user_id)
+        .eq('service', 'claude')
+        .not('access_token', 'is', null)
+        .limit(1)
+        .maybeSingle();
+
+      if (claudeToken?.access_token) {
+        let rawKey = claudeToken.access_token;
+        // Decrypt if AES-256-GCM encrypted (format: iv:authTag:ciphertext in base64)
+        if (rawKey.split(':').length === 3) {
+          try {
+            const crypto = require('crypto');
+            const secret = process.env.API_KEY_ENCRYPTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+            if (secret) {
+              const encKey = crypto.createHash('sha256').update(secret).digest();
+              const [ivB64, authTagB64, encB64] = rawKey.split(':');
+              const decipher = crypto.createDecipheriv('aes-256-gcm', encKey, Buffer.from(ivB64, 'base64'));
+              decipher.setAuthTag(Buffer.from(authTagB64, 'base64'));
+              rawKey = decipher.update(Buffer.from(encB64, 'base64')).toString('utf8') + decipher.final('utf8');
+            }
+          } catch (decryptErr) {
+            console.error(`[executor] Failed to decrypt oauth_tokens claude key:`, decryptErr.message);
+          }
+        }
+        if (rawKey && rawKey.startsWith('sk-ant-')) {
+          console.log(`[executor] Found claude key in oauth_tokens for user ${user_id}`);
+          conn = { ...conn, anthropic_api_key: rawKey };
+        }
+      }
+    }
+
+    if (!conn?.anthropic_api_key) {
       console.error(`[executor] No API key for user ${user_id}`);
       await supabase.from('tasks')
         .update({ status: 'failed', last_error: 'No Anthropic API key configured. Add it in Settings → Connections.', updated_at: new Date().toISOString() })
